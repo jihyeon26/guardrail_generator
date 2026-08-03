@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sop-guardrail-workbench"
+version = "0.1.0"
+description = "Evidence-grounded SOP-to-guardrail workflow with human and LLM review gates"
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+  "langgraph>=1.0,<2",
+  "pydantic>=2.12,<3",
+]
+
+[project.optional-dependencies]
+azure = [
+  "azure-identity>=1.25,<2",
+  "langchain-openai>=1.0,<2",
+]
+
+[dependency-groups]
+dev = [
+  "hatchling>=1.27,<2",
+  "mypy>=1.18,<2",
+  "pytest>=8.4,<10",
+  "pytest-cov>=6.2,<8",
+  "ruff>=0.13,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sop_guardrail"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "PT", "SIM", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["sop_guardrail"]
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+addopts = [
+  "--strict-config",
+  "--strict-markers",
+  "--cov=sop_guardrail",
+  "--cov-branch",
+  "--cov-report=term-missing",
+  "--cov-report=xml",
+  "--cov-fail-under=85",
+]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+branch = true
+source = ["sop_guardrail"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+[tool.uv]
+default-groups = ["dev"]

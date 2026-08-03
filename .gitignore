@@ -1,0 +1,23 @@
+.coverage
+.cache/
+.env
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+coverage.xml
+dist/
+docs/internal/
+
+# Local agent instructions and private working notes
+.agents/
+.codex/
+AGENT.md
+AGENTS.md
+agent.md
+agents.md
+agend.md
+
+*.egg-info/
+*.py[cod]
