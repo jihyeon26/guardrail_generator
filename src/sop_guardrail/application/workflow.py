@@ -1,0 +1,299 @@
+"""Explicit LangGraph workflow with deterministic, LLM, and human gates."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from hashlib import sha256
+from typing import Any, Literal
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
+
+from sop_guardrail.application.prompts import (
+    assessment_prompt,
+    guardrail_compilation_prompt,
+    policy_extraction_prompt,
+)
+from sop_guardrail.application.state import WorkflowState
+from sop_guardrail.domain.models import (
+    EvidenceSpan,
+    FeedbackCard,
+    FeedbackStage,
+    GuardrailCompilation,
+    GuardrailRelease,
+    GuardrailRule,
+    LLMAssessment,
+    ModelTask,
+    PolicyCandidate,
+    PolicyExtraction,
+    ReviewDecision,
+    ReviewGate,
+    ReviewRequest,
+    ReviewVerdict,
+    SopDocument,
+)
+from sop_guardrail.domain.ports import FeedbackStore, StructuredModelGateway
+from sop_guardrail.domain.validation import (
+    validate_guardrail_references,
+    validate_policy_references,
+)
+
+
+@dataclass(frozen=True)
+class WorkflowDependencies:
+    model_gateway: StructuredModelGateway
+    feedback_store: FeedbackStore
+
+
+def _document(state: WorkflowState) -> SopDocument:
+    return SopDocument.model_validate(state["document"])
+
+
+def _evidence(state: WorkflowState) -> tuple[EvidenceSpan, ...]:
+    return tuple(EvidenceSpan.model_validate(item) for item in state.get("evidence", []))
+
+
+def _policies(state: WorkflowState) -> tuple[PolicyCandidate, ...]:
+    return tuple(PolicyCandidate.model_validate(item) for item in state.get("policies", []))
+
+
+def _guardrails(state: WorkflowState) -> tuple[GuardrailRule, ...]:
+    return tuple(GuardrailRule.model_validate(item) for item in state.get("guardrails", []))
+
+
+def _review(
+    state: WorkflowState, key: Literal["policy_review", "release_review"]
+) -> ReviewDecision:
+    return ReviewDecision.model_validate(state[key])
+
+
+def _append_model_run(state: WorkflowState, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    return [*state.get("model_runs", []), metadata]
+
+
+def _ingest_node(state: WorkflowState) -> WorkflowState:
+    document = _document(state)
+    evidence = EvidenceSpan.from_document(document)
+    return {
+        "evidence": [evidence.model_dump(mode="json")],
+        "validation_errors": [],
+        "status": "ingested",
+    }
+
+
+def _extract_policies_node(
+    state: WorkflowState, dependencies: WorkflowDependencies
+) -> WorkflowState:
+    document = _document(state)
+    evidence = _evidence(state)
+    feedback = dependencies.feedback_store.list_active(FeedbackStage.POLICY_EXTRACTION)
+    result = dependencies.model_gateway.invoke(
+        task=ModelTask.POLICY_EXTRACTION,
+        prompt=policy_extraction_prompt(document=document, evidence=evidence, feedback=feedback),
+        response_model=PolicyExtraction,
+    )
+    return {
+        "policies": [item.model_dump(mode="json") for item in result.output.policies],
+        "model_runs": _append_model_run(state, result.metadata.model_dump(mode="json")),
+        "status": "policies_extracted",
+    }
+
+
+def _validate_policies_node(state: WorkflowState) -> WorkflowState:
+    errors = validate_policy_references(_policies(state), _evidence(state))
+    return {
+        "validation_errors": list(errors),
+        "status": "policy_validation_failed" if errors else "policies_validated",
+    }
+
+
+def _route_policy_validation(state: WorkflowState) -> Literal["review", "end"]:
+    return "end" if state.get("validation_errors") else "review"
+
+
+def _policy_review_node(state: WorkflowState) -> WorkflowState:
+    request = ReviewRequest(
+        run_id=state["run_id"],
+        gate=ReviewGate.POLICY,
+        item_ids=tuple(item.policy_id for item in _policies(state)),
+        summary="Review extracted policies and their cited SOP evidence.",
+    )
+    decision = ReviewDecision.model_validate(interrupt(request.model_dump(mode="json")))
+    if decision.gate is not ReviewGate.POLICY:
+        raise ValueError("policy gate received a decision for a different gate")
+    return {
+        "policy_review": decision.model_dump(mode="json"),
+        "status": f"policy_{decision.verdict.value}",
+    }
+
+
+def _route_policy_review(state: WorkflowState) -> Literal["compile", "feedback"]:
+    decision = _review(state, "policy_review")
+    return "compile" if decision.verdict is ReviewVerdict.APPROVE else "feedback"
+
+
+def _compile_guardrails_node(
+    state: WorkflowState, dependencies: WorkflowDependencies
+) -> WorkflowState:
+    policies = _policies(state)
+    feedback = dependencies.feedback_store.list_active(FeedbackStage.GUARDRAIL_COMPILATION)
+    result = dependencies.model_gateway.invoke(
+        task=ModelTask.GUARDRAIL_COMPILATION,
+        prompt=guardrail_compilation_prompt(policies=policies, feedback=feedback),
+        response_model=GuardrailCompilation,
+    )
+    return {
+        "guardrails": [item.model_dump(mode="json") for item in result.output.rules],
+        "model_runs": _append_model_run(state, result.metadata.model_dump(mode="json")),
+        "status": "guardrails_compiled",
+    }
+
+
+def _validate_guardrails_node(state: WorkflowState) -> WorkflowState:
+    errors = validate_guardrail_references(_guardrails(state), _policies(state), _evidence(state))
+    return {
+        "validation_errors": list(errors),
+        "status": "guardrail_validation_failed" if errors else "guardrails_validated",
+    }
+
+
+def _route_guardrail_validation(state: WorkflowState) -> Literal["assess", "end"]:
+    return "end" if state.get("validation_errors") else "assess"
+
+
+def _llm_assessment_node(state: WorkflowState, dependencies: WorkflowDependencies) -> WorkflowState:
+    feedback = dependencies.feedback_store.list_active(FeedbackStage.LLM_ASSESSMENT)
+    result = dependencies.model_gateway.invoke(
+        task=ModelTask.GUARDRAIL_ASSESSMENT,
+        prompt=assessment_prompt(
+            policies=_policies(state),
+            guardrails=_guardrails(state),
+            evidence=_evidence(state),
+            feedback=feedback,
+        ),
+        response_model=LLMAssessment,
+    )
+    return {
+        "llm_assessment": result.output.model_dump(mode="json"),
+        "model_runs": _append_model_run(state, result.metadata.model_dump(mode="json")),
+        "status": "llm_assessed",
+    }
+
+
+def _release_review_node(state: WorkflowState) -> WorkflowState:
+    assessment = LLMAssessment.model_validate(state["llm_assessment"])
+    request = ReviewRequest(
+        run_id=state["run_id"],
+        gate=ReviewGate.RELEASE,
+        item_ids=tuple(item.rule_id for item in _guardrails(state)),
+        summary=f"Final release review. Advisory LLM verdict: {assessment.verdict.value}.",
+    )
+    decision = ReviewDecision.model_validate(interrupt(request.model_dump(mode="json")))
+    if decision.gate is not ReviewGate.RELEASE:
+        raise ValueError("release gate received a decision for a different gate")
+    return {
+        "release_review": decision.model_dump(mode="json"),
+        "status": f"release_{decision.verdict.value}",
+    }
+
+
+def _route_release_review(state: WorkflowState) -> Literal["publish", "feedback"]:
+    decision = _review(state, "release_review")
+    return "publish" if decision.verdict is ReviewVerdict.APPROVE else "feedback"
+
+
+def _record_feedback_node(
+    state: WorkflowState, dependencies: WorkflowDependencies
+) -> WorkflowState:
+    if "release_review" in state:
+        decision = _review(state, "release_review")
+        stage = FeedbackStage.LLM_ASSESSMENT
+    else:
+        decision = _review(state, "policy_review")
+        stage = FeedbackStage.POLICY_EXTRACTION
+
+    lesson = decision.reusable_lesson or decision.comment
+    digest = sha256(f"{state['run_id']}:{decision.gate.value}:{lesson}".encode()).hexdigest()[:12]
+    feedback = FeedbackCard(
+        feedback_id=f"feedback-{digest}",
+        stage=stage,
+        lesson=lesson,
+        source_run_id=state["run_id"],
+        source_gate=decision.gate,
+    )
+    dependencies.feedback_store.add(feedback)
+    return {
+        "feedback_ids": [*state.get("feedback_ids", []), feedback.feedback_id],
+        "status": "feedback_pending",
+    }
+
+
+def _publish_node(state: WorkflowState) -> WorkflowState:
+    decision = _review(state, "release_review")
+    if decision.verdict is not ReviewVerdict.APPROVE:
+        raise ValueError("only an approved release decision can publish")
+    release = GuardrailRelease(
+        release_id=f"release-{state['run_id']}",
+        version="0.1.0",
+        source_document_id=_document(state).document_id,
+        rules=_guardrails(state),
+        approved_by=decision.reviewer,
+    )
+    return {"release": release.model_dump(mode="json"), "status": "released"}
+
+
+def build_workflow(
+    *,
+    model_gateway: StructuredModelGateway,
+    feedback_store: FeedbackStore,
+    checkpointer: BaseCheckpointSaver[Any] | None = None,
+) -> Any:
+    """Compile a workflow whose external dependencies are closed over by thin nodes."""
+
+    dependencies = WorkflowDependencies(model_gateway=model_gateway, feedback_store=feedback_store)
+    graph = StateGraph(WorkflowState)
+
+    graph.add_node("ingest", _ingest_node)
+    graph.add_node("extract_policies", lambda state: _extract_policies_node(state, dependencies))
+    graph.add_node("validate_policies", _validate_policies_node)
+    graph.add_node("policy_review", _policy_review_node)
+    graph.add_node(
+        "compile_guardrails", lambda state: _compile_guardrails_node(state, dependencies)
+    )
+    graph.add_node("validate_guardrails", _validate_guardrails_node)
+    graph.add_node("llm_assessment", lambda state: _llm_assessment_node(state, dependencies))
+    graph.add_node("release_review", _release_review_node)
+    graph.add_node("record_feedback", lambda state: _record_feedback_node(state, dependencies))
+    graph.add_node("publish", _publish_node)
+
+    graph.add_edge(START, "ingest")
+    graph.add_edge("ingest", "extract_policies")
+    graph.add_edge("extract_policies", "validate_policies")
+    graph.add_conditional_edges(
+        "validate_policies",
+        _route_policy_validation,
+        {"review": "policy_review", "end": END},
+    )
+    graph.add_conditional_edges(
+        "policy_review",
+        _route_policy_review,
+        {"compile": "compile_guardrails", "feedback": "record_feedback"},
+    )
+    graph.add_edge("compile_guardrails", "validate_guardrails")
+    graph.add_conditional_edges(
+        "validate_guardrails",
+        _route_guardrail_validation,
+        {"assess": "llm_assessment", "end": END},
+    )
+    graph.add_edge("llm_assessment", "release_review")
+    graph.add_conditional_edges(
+        "release_review",
+        _route_release_review,
+        {"publish": "publish", "feedback": "record_feedback"},
+    )
+    graph.add_edge("record_feedback", END)
+    graph.add_edge("publish", END)
+
+    return graph.compile(checkpointer=checkpointer or InMemorySaver())
