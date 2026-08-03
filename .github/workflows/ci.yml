@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.12.1"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-extras --all-groups
+
+      - name: Check formatting
+        if: matrix.python-version == '3.12'
+        run: uv run ruff format --check .
+
+      - name: Lint
+        if: matrix.python-version == '3.12'
+        run: uv run ruff check .
+
+      - name: Type check
+        if: matrix.python-version == '3.12'
+        run: uv run mypy src tests
+
+      - name: Test
+        run: uv run pytest
+
+      - name: Build package
+        if: matrix.python-version == '3.12'
+        run: uv build
