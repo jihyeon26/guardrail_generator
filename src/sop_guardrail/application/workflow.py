@@ -36,15 +36,29 @@ from sop_guardrail.domain.models import (
 )
 from sop_guardrail.domain.ports import FeedbackStore, StructuredModelGateway
 from sop_guardrail.domain.validation import (
+    validate_guardrail_coverage,
     validate_guardrail_references,
     validate_policy_references,
 )
+
+DEFAULT_COMPILATION_BATCH_SIZE = 5
 
 
 @dataclass(frozen=True)
 class WorkflowDependencies:
     model_gateway: StructuredModelGateway
     feedback_store: FeedbackStore
+    compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE
+
+    def __post_init__(self) -> None:
+        if self.compilation_batch_size < 1:
+            raise ValueError("compilation_batch_size must be at least 1")
+
+
+def _batches(
+    policies: tuple[PolicyCandidate, ...], size: int
+) -> tuple[tuple[PolicyCandidate, ...], ...]:
+    return tuple(tuple(policies[start : start + size]) for start in range(0, len(policies), size))
 
 
 def _document(state: WorkflowState) -> SopDocument:
@@ -137,22 +151,41 @@ def _route_policy_review(state: WorkflowState) -> Literal["compile", "feedback"]
 def _compile_guardrails_node(
     state: WorkflowState, dependencies: WorkflowDependencies
 ) -> WorkflowState:
+    """Compile in batches so a long SOP cannot be answered with a single rule.
+
+    One call per batch keeps each prompt small enough that the model is asked for a
+    handful of rules rather than an open-ended set. Coverage is still proved by
+    deterministic validation, never by the batching itself.
+    """
+
     policies = _policies(state)
     feedback = dependencies.feedback_store.list_active(FeedbackStage.GUARDRAIL_COMPILATION)
-    result = dependencies.model_gateway.invoke(
-        task=ModelTask.GUARDRAIL_COMPILATION,
-        prompt=guardrail_compilation_prompt(policies=policies, feedback=feedback),
-        response_model=GuardrailCompilation,
-    )
+    rules: list[dict[str, Any]] = []
+    metadata: list[dict[str, Any]] = []
+
+    for batch in _batches(policies, dependencies.compilation_batch_size):
+        result = dependencies.model_gateway.invoke(
+            task=ModelTask.GUARDRAIL_COMPILATION,
+            prompt=guardrail_compilation_prompt(policies=batch, feedback=feedback),
+            response_model=GuardrailCompilation,
+        )
+        rules.extend(item.model_dump(mode="json") for item in result.output.rules)
+        metadata.append(result.metadata.model_dump(mode="json"))
+
     return {
-        "guardrails": [item.model_dump(mode="json") for item in result.output.rules],
-        "model_runs": _append_model_run(state, result.metadata.model_dump(mode="json")),
+        "guardrails": rules,
+        "model_runs": [*state.get("model_runs", []), *metadata],
         "status": "guardrails_compiled",
     }
 
 
 def _validate_guardrails_node(state: WorkflowState) -> WorkflowState:
-    errors = validate_guardrail_references(_guardrails(state), _policies(state), _evidence(state))
+    guardrails = _guardrails(state)
+    policies = _policies(state)
+    errors = (
+        *validate_guardrail_references(guardrails, policies, _evidence(state)),
+        *validate_guardrail_coverage(guardrails, policies),
+    )
     return {
         "validation_errors": list(errors),
         "status": "guardrail_validation_failed" if errors else "guardrails_validated",
@@ -249,10 +282,15 @@ def build_workflow(
     model_gateway: StructuredModelGateway,
     feedback_store: FeedbackStore,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
+    compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE,
 ) -> Any:
     """Compile a workflow whose external dependencies are closed over by thin nodes."""
 
-    dependencies = WorkflowDependencies(model_gateway=model_gateway, feedback_store=feedback_store)
+    dependencies = WorkflowDependencies(
+        model_gateway=model_gateway,
+        feedback_store=feedback_store,
+        compilation_batch_size=compilation_batch_size,
+    )
     graph = StateGraph(WorkflowState)
 
     graph.add_node("ingest", _ingest_node)

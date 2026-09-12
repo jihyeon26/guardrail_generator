@@ -24,7 +24,7 @@ from pathlib import Path
 
 from langgraph.types import Command
 
-from sop_guardrail.application.workflow import build_workflow
+from sop_guardrail.application.workflow import DEFAULT_COMPILATION_BATCH_SIZE, build_workflow
 from sop_guardrail.domain.models import ReviewDecision, ReviewGate, ReviewVerdict, SopDocument
 from sop_guardrail.infrastructure.documents import load_sop_document
 from sop_guardrail.infrastructure.feedback import InMemoryFeedbackStore
@@ -69,6 +69,12 @@ def main(argv: list[str] | None = None) -> int:
         help="SOP file (.txt, .md, or .pdf); omit to use the built-in synthetic SOP",
     )
     parser.add_argument("--run-id", default="local-demo", help="run and checkpoint thread id")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=DEFAULT_COMPILATION_BATCH_SIZE,
+        help="policies per guardrail-compilation model call",
+    )
     args = parser.parse_args(argv)
 
     settings = LocalOpenAISettings.from_env()
@@ -84,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
     graph = build_workflow(
         model_gateway=LocalOpenAIGateway(settings),
         feedback_store=InMemoryFeedbackStore(),
+        compilation_batch_size=args.batch_size,
     )
     config = {"configurable": {"thread_id": args.run_id}}
 

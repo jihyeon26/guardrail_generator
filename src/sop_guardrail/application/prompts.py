@@ -39,8 +39,11 @@ def guardrail_compilation_prompt(
     return (
         "Compile each approved policy into a testable rule. Preserve policy_id and evidence_refs. "
         "Use escalation when the policy cannot be enforced deterministically, and provide at least "
-        "one test case per rule.\n\n"
-        f"POLICIES\n{_json(policies)}\n\n"
+        "one test case per rule.\n"
+        "Return one rule for every policy listed below and no rule for any other policy. "
+        "Policies arrive in batches, so derive each rule_id from the policy_id it enforces to "
+        "keep rule ids unique across the whole run.\n\n"
+        f"POLICIES ({len(policies)} to compile)\n{_json(policies)}\n\n"
         f"APPROVED_FEEDBACK\n{_feedback_section(feedback)}"
     )
 

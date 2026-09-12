@@ -30,6 +30,23 @@ def validate_policy_references(
     return tuple(errors)
 
 
+def validate_guardrail_coverage(
+    rules: tuple[GuardrailRule, ...], policies: tuple[PolicyCandidate, ...]
+) -> tuple[str, ...]:
+    """Report approved policies that no rule enforces.
+
+    Reference validation only proves that each rule points at a real policy, so a
+    compilation that silently drops most policies still passes it. A release that
+    leaves approved policies unenforced is a coverage failure, not a model opinion.
+    """
+
+    covered = {rule.policy_id for rule in rules}
+    uncovered = {policy.policy_id for policy in policies} - covered
+    if not uncovered:
+        return ()
+    return (f"policies without a guardrail rule: {sorted(uncovered)}",)
+
+
 def validate_guardrail_references(
     rules: tuple[GuardrailRule, ...],
     policies: tuple[PolicyCandidate, ...],
