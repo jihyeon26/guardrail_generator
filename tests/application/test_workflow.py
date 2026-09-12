@@ -18,7 +18,9 @@ from sop_guardrail.domain.models import (
     ReviewVerdict,
     RuleTestCase,
     Severity,
+    SopDocument,
 )
+from sop_guardrail.domain.segmentation import segment_document
 from sop_guardrail.infrastructure.feedback import InMemoryFeedbackStore
 from sop_guardrail.infrastructure.providers.demo import ScriptedModelGateway
 from tests.helpers import (
@@ -338,3 +340,103 @@ def test_a_batch_size_below_one_is_rejected() -> None:
             feedback_store=InMemoryFeedbackStore(),
             compilation_batch_size=0,
         )
+
+
+_SECTIONED_SOP = """1. Purpose
+This procedure governs the release of outbound payments.
+
+2. Approval
+A reviewer must approve a high-impact change before the operator completes it.
+"""
+
+
+def _sectioned_document() -> SopDocument:
+    return SopDocument.from_text(
+        document_id="sectioned-sop",
+        source_name="payment-release.txt",
+        text=_SECTIONED_SOP,
+    )
+
+
+def test_ingest_cites_sections_rather_than_the_whole_document() -> None:
+    document = _sectioned_document()
+    spans = segment_document(document)
+    gateway = ScriptedModelGateway(
+        {ModelTask.POLICY_EXTRACTION: [_policy_citing(spans[1].evidence_id)]}
+    )
+    graph = build_workflow(
+        model_gateway=gateway,
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+    )
+    config = _config("run-sectioned")
+
+    state = cast(
+        dict[str, Any],
+        graph.invoke(
+            {"run_id": "run-sectioned", "document": document.model_dump(mode="json")}, config
+        ),
+    )
+
+    assert len(state["evidence"]) == 2
+    assert [span["evidence_id"] for span in state["evidence"]] == [
+        spans[0].evidence_id,
+        spans[1].evidence_id,
+    ]
+    assert state["evidence"][1]["quote"].startswith("2. Approval")
+    assert state["validation_errors"] == []
+    assert state["__interrupt__"]
+
+
+def _policy_citing(evidence_id: str) -> PolicyExtraction:
+    return PolicyExtraction(
+        policies=(
+            PolicyCandidate(
+                policy_id="policy-approval",
+                title="Approval requirement",
+                statement="A reviewer must approve a high-impact change.",
+                actor="reviewer",
+                action="approve the change",
+                evidence_refs=(evidence_id,),
+                confidence=0.9,
+            ),
+        )
+    )
+
+
+def test_a_span_that_no_longer_quotes_the_document_blocks_the_policy_gate() -> None:
+    """A checkpoint whose document and spans drifted apart must not reach a reviewer."""
+
+    document = _sectioned_document()
+    spans = segment_document(document)
+    # Same length, so the span still satisfies its own contract and the document
+    # comparison is what has to catch it.
+    tampered = spans[1].model_copy(update={"quote": "X" + spans[1].quote[1:]})
+    gateway = ScriptedModelGateway(
+        {ModelTask.POLICY_EXTRACTION: [_policy_citing(spans[1].evidence_id)]}
+    )
+    graph = build_workflow(
+        model_gateway=gateway,
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+    )
+    config = _config("run-tampered")
+    graph.update_state(
+        config,
+        {
+            "run_id": "run-tampered",
+            "document": document.model_dump(mode="json"),
+            "policies": [_policy_citing(spans[1].evidence_id).policies[0].model_dump(mode="json")],
+            "evidence": [spans[0].model_dump(mode="json"), tampered.model_dump(mode="json")],
+        },
+        as_node="extract_policies",
+    )
+
+    final = cast(dict[str, Any], graph.invoke(None, config))
+
+    assert final["status"] == "policy_validation_failed"
+    assert final["validation_errors"] == [
+        f"evidence {tampered.evidence_id} does not quote "
+        f"[{tampered.char_start}, {tampered.char_end}) of the document"
+    ]
+    assert "__interrupt__" not in final

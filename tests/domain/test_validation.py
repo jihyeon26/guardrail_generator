@@ -1,5 +1,6 @@
 from sop_guardrail.domain.models import EvidenceSpan, PolicyCandidate
 from sop_guardrail.domain.validation import (
+    validate_evidence_spans,
     validate_guardrail_coverage,
     validate_guardrail_references,
     validate_policy_references,
@@ -71,3 +72,63 @@ def test_coverage_ignores_rules_that_point_at_an_unknown_policy() -> None:
     assert validate_guardrail_coverage(rules, policies) == (
         "policies without a guardrail rule: ['policy-review-approval']",
     )
+
+
+def test_faithful_spans_pass_evidence_validation() -> None:
+    document = synthetic_document()
+
+    assert validate_evidence_spans((EvidenceSpan.from_document(document),), document) == ()
+
+
+def test_a_span_whose_offsets_moved_is_reported() -> None:
+    document = synthetic_document()
+    span = EvidenceSpan.from_document(document)
+    shifted = span.model_copy(update={"char_start": 2})
+
+    errors = validate_evidence_spans((shifted,), document)
+
+    assert errors == (
+        f"evidence {span.evidence_id} does not quote [2, {span.char_end}) of the document",
+    )
+
+
+def test_a_span_past_the_end_of_the_document_is_reported() -> None:
+    document = synthetic_document()
+    span = EvidenceSpan.from_document(document)
+    overrun = span.model_copy(update={"char_end": len(document.text) + 5})
+
+    errors = validate_evidence_spans((overrun,), document)
+
+    assert errors == (
+        f"evidence {span.evidence_id} ends at {len(document.text) + 5}, "
+        f"past the {len(document.text)} character document",
+    )
+
+
+def test_a_span_citing_another_document_is_reported() -> None:
+    document = synthetic_document()
+    span = EvidenceSpan.from_document(document).model_copy(update={"document_id": "other-sop"})
+
+    errors = validate_evidence_spans((span,), document)
+
+    assert errors == (
+        f"evidence {span.evidence_id} cites document other-sop, expected {document.document_id}",
+    )
+
+
+def test_a_quote_hash_that_does_not_match_is_reported() -> None:
+    document = synthetic_document()
+    span = EvidenceSpan.from_document(document).model_copy(update={"quote_sha256": "0" * 64})
+
+    errors = validate_evidence_spans((span,), document)
+
+    assert errors == (f"evidence {span.evidence_id} has a quote hash mismatch",)
+
+
+def test_duplicate_span_ids_are_reported() -> None:
+    document = synthetic_document()
+    span = EvidenceSpan.from_document(document)
+
+    errors = validate_evidence_spans((span, span), document)
+
+    assert errors[0] == f"duplicate evidence ids: ['{span.evidence_id}']"
