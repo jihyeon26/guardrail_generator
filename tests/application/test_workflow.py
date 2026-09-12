@@ -307,8 +307,8 @@ def test_a_policy_left_without_a_rule_blocks_the_release() -> None:
     gateway = ScriptedModelGateway(
         {
             ModelTask.POLICY_EXTRACTION: [extraction],
-            # The model answers the whole batch with a rule for one policy only.
-            ModelTask.GUARDRAIL_COMPILATION: [_rules_for(extraction.policies[:1], evidence_id)],
+            # The model answers with a rule for one policy only, every attempt.
+            ModelTask.GUARDRAIL_COMPILATION: [_rules_for(extraction.policies[:1], evidence_id)] * 3,
             ModelTask.GUARDRAIL_ASSESSMENT: [passing_assessment()],
         }
     )
@@ -331,6 +331,8 @@ def test_a_policy_left_without_a_rule_blocks_the_release() -> None:
     assert "release" not in final
     assert "__interrupt__" not in final
     assert gateway.prompts[ModelTask.GUARDRAIL_ASSESSMENT] == []
+    # Every attempt was spent before the gap was reported.
+    assert len(gateway.prompts[ModelTask.GUARDRAIL_COMPILATION]) == 3
 
 
 def test_a_batch_size_below_one_is_rejected() -> None:
@@ -440,3 +442,118 @@ def test_a_span_that_no_longer_quotes_the_document_blocks_the_policy_gate() -> N
         f"[{tampered.char_start}, {tampered.char_end}) of the document"
     ]
     assert "__interrupt__" not in final
+
+
+def test_a_batch_is_retried_for_the_policies_the_model_left_out() -> None:
+    document = synthetic_document("retried-sop")
+    evidence_id = EvidenceSpan.from_document(document).evidence_id
+    extraction = _numbered_policies("retried-sop", 3)
+    gateway = ScriptedModelGateway(
+        {
+            ModelTask.POLICY_EXTRACTION: [extraction],
+            ModelTask.GUARDRAIL_COMPILATION: [
+                _rules_for(extraction.policies[:1], evidence_id),
+                _rules_for(extraction.policies[1:], evidence_id),
+            ],
+            ModelTask.GUARDRAIL_ASSESSMENT: [passing_assessment()],
+        }
+    )
+    graph = build_workflow(
+        model_gateway=gateway,
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+        compilation_batch_size=3,
+    )
+    config = _config("run-retried")
+
+    graph.invoke({"run_id": "run-retried", "document": document.model_dump(mode="json")}, config)
+    graph.invoke(Command(resume=_decision(ReviewGate.POLICY, ReviewVerdict.APPROVE)), config)
+    final = cast(
+        dict[str, Any],
+        graph.invoke(Command(resume=_decision(ReviewGate.RELEASE, ReviewVerdict.APPROVE)), config),
+    )
+
+    first, retry = gateway.prompts[ModelTask.GUARDRAIL_COMPILATION]
+    assert "(3 to compile)" in first
+    # The retry carries only what is still missing.
+    assert "(2 to compile)" in retry
+    assert "policy-00" not in retry
+    assert "policy-01" in retry
+    assert "policy-02" in retry
+
+    assert len(final["guardrails"]) == 3
+    assert final["validation_errors"] == []
+    assert final["status"] == "released"
+    # extraction + two compilation attempts + assessment
+    assert len(final["model_runs"]) == 4
+
+
+def test_a_retry_that_re_answers_a_covered_policy_does_not_duplicate_it() -> None:
+    """The retry asked only about the missing policies; anything else is unsolicited."""
+
+    document = synthetic_document("repeating-sop")
+    evidence_id = EvidenceSpan.from_document(document).evidence_id
+    extraction = _numbered_policies("repeating-sop", 2)
+    gateway = ScriptedModelGateway(
+        {
+            ModelTask.POLICY_EXTRACTION: [extraction],
+            ModelTask.GUARDRAIL_COMPILATION: [
+                _rules_for(extraction.policies[:1], evidence_id),
+                # Answers the missing policy and repeats the one already covered.
+                _rules_for(extraction.policies, evidence_id),
+            ],
+            ModelTask.GUARDRAIL_ASSESSMENT: [passing_assessment()],
+        }
+    )
+    graph = build_workflow(
+        model_gateway=gateway,
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+        compilation_batch_size=2,
+    )
+    config = _config("run-repeating")
+
+    graph.invoke({"run_id": "run-repeating", "document": document.model_dump(mode="json")}, config)
+    graph.invoke(Command(resume=_decision(ReviewGate.POLICY, ReviewVerdict.APPROVE)), config)
+    final = cast(
+        dict[str, Any],
+        graph.invoke(Command(resume=_decision(ReviewGate.RELEASE, ReviewVerdict.APPROVE)), config),
+    )
+
+    assert [rule["policy_id"] for rule in final["guardrails"]] == ["policy-00", "policy-01"]
+    assert final["validation_errors"] == []
+    assert final["status"] == "released"
+
+
+def test_a_complete_first_answer_is_not_retried() -> None:
+    document = synthetic_document("complete-sop")
+    evidence_id = EvidenceSpan.from_document(document).evidence_id
+    extraction = _numbered_policies("complete-sop", 2)
+    gateway = ScriptedModelGateway(
+        {
+            ModelTask.POLICY_EXTRACTION: [extraction],
+            ModelTask.GUARDRAIL_COMPILATION: [_rules_for(extraction.policies, evidence_id)],
+            ModelTask.GUARDRAIL_ASSESSMENT: [passing_assessment()],
+        }
+    )
+    graph = build_workflow(
+        model_gateway=gateway,
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+        compilation_batch_size=2,
+    )
+    config = _config("run-complete")
+
+    graph.invoke({"run_id": "run-complete", "document": document.model_dump(mode="json")}, config)
+    graph.invoke(Command(resume=_decision(ReviewGate.POLICY, ReviewVerdict.APPROVE)), config)
+
+    assert len(gateway.prompts[ModelTask.GUARDRAIL_COMPILATION]) == 1
+
+
+def test_a_max_attempts_below_one_is_rejected() -> None:
+    with pytest.raises(ValueError, match="compilation_max_attempts must be at least 1"):
+        WorkflowDependencies(
+            model_gateway=ScriptedModelGateway({}),
+            feedback_store=InMemoryFeedbackStore(),
+            compilation_max_attempts=0,
+        )
