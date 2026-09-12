@@ -12,7 +12,7 @@ schemas, data, screenshots, metrics, or Git history.
 Long policy documents are difficult to translate into consistent controls. This
 project treats that translation as a governed workflow rather than a single LLM call:
 
-1. ingest an SOP and create stable evidence spans;
+1. ingest an SOP and cut it into section-level evidence spans with exact offsets;
 2. extract typed policy candidates that cite those spans;
 3. pause for human review;
 4. compile approved policies into typed guardrail rules;
@@ -111,6 +111,13 @@ The loader normalizes the extracted text once, before evidence offsets are compu
 so a quoted span always matches the stored document. Scanned image-only PDFs are
 rejected rather than producing empty evidence.
 
+Ingest then splits the SOP on numbered headings into ordered, non-overlapping spans
+(`--max-span-chars` caps a long section, default 1500). Each span records its
+character range, its quote, and the quote's hash, and every policy must cite the spans
+it was read from. Before a reviewer sees a policy, deterministic validation re-reads
+each cited span out of the stored document and rejects any that no longer matches — a
+citation is only worth as much as the span behind it.
+
 The contents of `data/sop_inputs/` are git-ignored on purpose; see
 [the folder README](data/sop_inputs/README.md) and [the clean-room
 boundary](docs/CLEAN_ROOM.md).
@@ -148,9 +155,7 @@ The first milestone is the executable workflow skeleton: typed contracts, two hu
 gates, an advisory LLM gate, curated feedback memory, Azure and local-model adapters
 behind one provider boundary, text and PDF document loading, and credential-free CI
 tests. A persistent database and a user interface are intentionally deferred until the
-core state transitions are stable. Document loading is deliberately shallow: the whole
-SOP becomes one evidence span, so section-level spans and chunked extraction are the
-next step.
+core state transitions are stable.
 
 ## License
 

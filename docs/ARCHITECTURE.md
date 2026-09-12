@@ -55,5 +55,6 @@ support pause/resume; they do not replace application-level idempotency or an au
 - graph tests for each routing branch and both interrupt/resume boundaries;
 - provider contract tests using deterministic structured outputs;
 - coverage and reference validation tests over policy and guardrail sets;
+- segmentation tests asserting spans tile the document and quote it exactly;
 - no-network CI by default;
 - optional live Azure smoke tests only in a separately protected workflow.

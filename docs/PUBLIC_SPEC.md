@@ -16,18 +16,20 @@ deterministic, LLM, and human review boundaries.
 
 ## Functional requirements
 
-1. Every policy candidate must cite one or more stable evidence-span identifiers.
-2. Every guardrail rule must cite approved policies and evidence spans.
-3. Unknown evidence identifiers, duplicate identifiers, and invalid transitions fail
-   deterministic validation.
-4. Every approved policy must be enforced by at least one guardrail rule; a compilation
+1. Ingest splits the document into ordered, non-overlapping evidence spans, each
+   recording its character range, quote, and quote hash.
+2. Every policy candidate must cite one or more stable evidence-span identifiers.
+3. Every guardrail rule must cite approved policies and evidence spans.
+4. Unknown evidence identifiers, duplicate identifiers, spans that no longer quote
+   their document, and invalid transitions fail deterministic validation.
+5. Every approved policy must be enforced by at least one guardrail rule; a compilation
    that silently drops policies fails deterministic validation.
-5. Policy candidates require an explicit human approve, revise, or reject decision.
-6. Guardrail releases require an explicit final human approval after LLM assessment.
-7. LLM assessment is advisory and must report uncertainty and cited evidence.
-8. Review feedback starts as pending and cannot affect later runs until approved.
-9. Each model call and released artifact carries provider-neutral provenance metadata.
-10. Tests run without cloud credentials or network access.
+6. Policy candidates require an explicit human approve, revise, or reject decision.
+7. Guardrail releases require an explicit final human approval after LLM assessment.
+8. LLM assessment is advisory and must report uncertainty and cited evidence.
+9. Review feedback starts as pending and cannot affect later runs until approved.
+10. Each model call and released artifact carries provider-neutral provenance metadata.
+11. Tests run without cloud credentials or network access.
 
 ## Initial acceptance criteria
 
@@ -35,6 +37,8 @@ deterministic, LLM, and human review boundaries.
 - rejected or revision-requested work does not publish a release;
 - malformed model output or unknown evidence references cannot reach a human gate;
 - a guardrail set that leaves an approved policy unenforced cannot reach a human gate;
+- an evidence span whose quote, offsets, or hash drifted from the stored document
+  cannot reach a human gate;
 - approved feedback is included in a later task prompt while pending feedback is not;
 - the Azure adapter is optional and never imported during the default test run;
 - CI checks formatting, lint, types, tests, coverage, and package build.
