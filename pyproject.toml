@@ -19,6 +19,9 @@ azure = [
   "azure-identity>=1.25,<2",
   "langchain-openai>=1.0,<2",
 ]
+documents = [
+    "pypdf>=6,<7",
+]
 
 [dependency-groups]
 dev = [
