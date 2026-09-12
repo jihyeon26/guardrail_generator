@@ -1,8 +1,9 @@
 """Pure deterministic validation for model-proposed artifacts."""
 
 from collections.abc import Iterable
+from hashlib import sha256
 
-from sop_guardrail.domain.models import EvidenceSpan, GuardrailRule, PolicyCandidate
+from sop_guardrail.domain.models import EvidenceSpan, GuardrailRule, PolicyCandidate, SopDocument
 
 
 def _duplicate_ids(values: Iterable[str]) -> set[str]:
@@ -13,6 +14,46 @@ def _duplicate_ids(values: Iterable[str]) -> set[str]:
             duplicates.add(value)
         seen.add(value)
     return duplicates
+
+
+def validate_evidence_spans(
+    evidence: tuple[EvidenceSpan, ...], document: SopDocument
+) -> tuple[str, ...]:
+    """Prove every span still quotes the document it claims to cite.
+
+    A citation is only worth as much as the span behind it. Offsets, quote text, and
+    quote hash are checked against the stored document, so a span that drifted from
+    the source — or was never in it — fails before a reviewer reads a policy.
+    """
+
+    errors: list[str] = []
+    duplicates = _duplicate_ids(span.evidence_id for span in evidence)
+    if duplicates:
+        errors.append(f"duplicate evidence ids: {sorted(duplicates)}")
+
+    for span in evidence:
+        if span.document_id != document.document_id:
+            errors.append(
+                f"evidence {span.evidence_id} cites document {span.document_id}, "
+                f"expected {document.document_id}"
+            )
+            continue
+        if span.char_end > len(document.text):
+            errors.append(
+                f"evidence {span.evidence_id} ends at {span.char_end}, "
+                f"past the {len(document.text)} character document"
+            )
+            continue
+        if document.text[span.char_start : span.char_end] != span.quote:
+            errors.append(
+                f"evidence {span.evidence_id} does not quote "
+                f"[{span.char_start}, {span.char_end}) of the document"
+            )
+            continue
+        if sha256(span.quote.encode("utf-8")).hexdigest() != span.quote_sha256:
+            errors.append(f"evidence {span.evidence_id} has a quote hash mismatch")
+
+    return tuple(errors)
 
 
 def validate_policy_references(

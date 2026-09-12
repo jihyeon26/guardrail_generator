@@ -15,6 +15,15 @@ def _json(value: BaseModel | tuple[BaseModel, ...]) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
 
 
+def _document_header(document: BaseModel) -> str:
+    """Identify the document without repeating its text; the spans already carry it."""
+
+    payload = {
+        key: value for key, value in document.model_dump(mode="json").items() if key != "text"
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+
+
 def _feedback_section(feedback: tuple[FeedbackCard, ...]) -> str:
     if not feedback:
         return "No approved lessons apply to this task."
@@ -27,8 +36,10 @@ def policy_extraction_prompt(
 ) -> str:
     return (
         "Extract explicit normative policies from the SOP. Do not infer missing obligations. "
-        "Every policy must cite one or more evidence_id values from the supplied evidence.\n\n"
-        f"DOCUMENT\n{_json(document)}\n\nEVIDENCE\n{_json(evidence)}\n\n"
+        "The evidence spans below are the SOP, split into sections. Every policy must cite the "
+        "evidence_id values of the spans it was read from, and no others.\n\n"
+        f"DOCUMENT\n{_document_header(document)}\n\n"
+        f"EVIDENCE ({len(evidence)} spans)\n{_json(evidence)}\n\n"
         f"APPROVED_FEEDBACK\n{_feedback_section(feedback)}"
     )
 

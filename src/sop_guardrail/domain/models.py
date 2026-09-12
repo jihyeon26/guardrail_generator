@@ -100,15 +100,40 @@ class EvidenceSpan(ContractModel):
         return self
 
     @classmethod
-    def from_document(cls, document: SopDocument) -> Self:
+    def from_slice(
+        cls, document: SopDocument, *, char_start: int, char_end: int, index: int
+    ) -> Self:
+        """Cut one span out of the document, keeping offsets and quote in step.
+
+        Surrounding whitespace is trimmed off the offsets before the quote is taken,
+        because contract models strip strings and a padded quote would no longer
+        match the character range it claims.
+        """
+
+        start = char_start
+        end = min(char_end, len(document.text))
+        while start < end and document.text[start].isspace():
+            start += 1
+        while end > start and document.text[end - 1].isspace():
+            end -= 1
+        if start >= end:
+            raise ValueError(f"slice [{char_start}, {char_end}) of {document.document_id} is empty")
+
+        quote = document.text[start:end]
         return cls(
-            evidence_id=f"evidence-{document.sha256[:12]}",
+            evidence_id=f"evidence-{document.sha256[:8]}-{index:03d}",
             document_id=document.document_id,
-            char_start=0,
-            char_end=len(document.text),
-            quote=document.text,
-            quote_sha256=sha256(document.text.encode("utf-8")).hexdigest(),
+            char_start=start,
+            char_end=end,
+            quote=quote,
+            quote_sha256=sha256(quote.encode("utf-8")).hexdigest(),
         )
+
+    @classmethod
+    def from_document(cls, document: SopDocument) -> Self:
+        """The degenerate single-span case: the whole document is the evidence."""
+
+        return cls.from_slice(document, char_start=0, char_end=len(document.text), index=0)
 
 
 class PolicyCandidate(ContractModel):

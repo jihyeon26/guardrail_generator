@@ -35,7 +35,9 @@ from sop_guardrail.domain.models import (
     SopDocument,
 )
 from sop_guardrail.domain.ports import FeedbackStore, StructuredModelGateway
+from sop_guardrail.domain.segmentation import DEFAULT_MAX_SPAN_CHARS, segment_document
 from sop_guardrail.domain.validation import (
+    validate_evidence_spans,
     validate_guardrail_coverage,
     validate_guardrail_references,
     validate_policy_references,
@@ -49,10 +51,13 @@ class WorkflowDependencies:
     model_gateway: StructuredModelGateway
     feedback_store: FeedbackStore
     compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE
+    max_span_chars: int = DEFAULT_MAX_SPAN_CHARS
 
     def __post_init__(self) -> None:
         if self.compilation_batch_size < 1:
             raise ValueError("compilation_batch_size must be at least 1")
+        if self.max_span_chars < 1:
+            raise ValueError("max_span_chars must be at least 1")
 
 
 def _batches(
@@ -87,11 +92,13 @@ def _append_model_run(state: WorkflowState, metadata: dict[str, Any]) -> list[di
     return [*state.get("model_runs", []), metadata]
 
 
-def _ingest_node(state: WorkflowState) -> WorkflowState:
+def _ingest_node(state: WorkflowState, dependencies: WorkflowDependencies) -> WorkflowState:
+    """Cut the SOP into section-level spans so a citation names a passage, not a file."""
+
     document = _document(state)
-    evidence = EvidenceSpan.from_document(document)
+    evidence = segment_document(document, max_span_chars=dependencies.max_span_chars)
     return {
-        "evidence": [evidence.model_dump(mode="json")],
+        "evidence": [span.model_dump(mode="json") for span in evidence],
         "validation_errors": [],
         "status": "ingested",
     }
@@ -116,7 +123,11 @@ def _extract_policies_node(
 
 
 def _validate_policies_node(state: WorkflowState) -> WorkflowState:
-    errors = validate_policy_references(_policies(state), _evidence(state))
+    evidence = _evidence(state)
+    errors = (
+        *validate_evidence_spans(evidence, _document(state)),
+        *validate_policy_references(_policies(state), evidence),
+    )
     return {
         "validation_errors": list(errors),
         "status": "policy_validation_failed" if errors else "policies_validated",
@@ -283,6 +294,7 @@ def build_workflow(
     feedback_store: FeedbackStore,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE,
+    max_span_chars: int = DEFAULT_MAX_SPAN_CHARS,
 ) -> Any:
     """Compile a workflow whose external dependencies are closed over by thin nodes."""
 
@@ -290,10 +302,11 @@ def build_workflow(
         model_gateway=model_gateway,
         feedback_store=feedback_store,
         compilation_batch_size=compilation_batch_size,
+        max_span_chars=max_span_chars,
     )
     graph = StateGraph(WorkflowState)
 
-    graph.add_node("ingest", _ingest_node)
+    graph.add_node("ingest", lambda state: _ingest_node(state, dependencies))
     graph.add_node("extract_policies", lambda state: _extract_policies_node(state, dependencies))
     graph.add_node("validate_policies", _validate_policies_node)
     graph.add_node("policy_review", _policy_review_node)
