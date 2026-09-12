@@ -25,6 +25,7 @@ from sop_guardrail.domain.models import (
     GuardrailRelease,
     GuardrailRule,
     LLMAssessment,
+    ModelMetadata,
     ModelTask,
     PolicyCandidate,
     PolicyExtraction,
@@ -44,6 +45,7 @@ from sop_guardrail.domain.validation import (
 )
 
 DEFAULT_COMPILATION_BATCH_SIZE = 5
+DEFAULT_COMPILATION_MAX_ATTEMPTS = 3
 
 
 @dataclass(frozen=True)
@@ -51,11 +53,14 @@ class WorkflowDependencies:
     model_gateway: StructuredModelGateway
     feedback_store: FeedbackStore
     compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE
+    compilation_max_attempts: int = DEFAULT_COMPILATION_MAX_ATTEMPTS
     max_span_chars: int = DEFAULT_MAX_SPAN_CHARS
 
     def __post_init__(self) -> None:
         if self.compilation_batch_size < 1:
             raise ValueError("compilation_batch_size must be at least 1")
+        if self.compilation_max_attempts < 1:
+            raise ValueError("compilation_max_attempts must be at least 1")
         if self.max_span_chars < 1:
             raise ValueError("max_span_chars must be at least 1")
 
@@ -175,19 +180,52 @@ def _compile_guardrails_node(
     metadata: list[dict[str, Any]] = []
 
     for batch in _batches(policies, dependencies.compilation_batch_size):
-        result = dependencies.model_gateway.invoke(
-            task=ModelTask.GUARDRAIL_COMPILATION,
-            prompt=guardrail_compilation_prompt(policies=batch, feedback=feedback),
-            response_model=GuardrailCompilation,
-        )
-        rules.extend(item.model_dump(mode="json") for item in result.output.rules)
-        metadata.append(result.metadata.model_dump(mode="json"))
+        batch_rules, batch_metadata = _compile_batch(batch, dependencies, feedback)
+        rules.extend(rule.model_dump(mode="json") for rule in batch_rules)
+        metadata.extend(item.model_dump(mode="json") for item in batch_metadata)
 
     return {
         "guardrails": rules,
         "model_runs": [*state.get("model_runs", []), *metadata],
         "status": "guardrails_compiled",
     }
+
+
+def _compile_batch(
+    batch: tuple[PolicyCandidate, ...],
+    dependencies: WorkflowDependencies,
+    feedback: tuple[FeedbackCard, ...],
+) -> tuple[tuple[GuardrailRule, ...], tuple[ModelMetadata, ...]]:
+    """Ask for the batch, then re-ask for whatever the model left out.
+
+    A model that answers five policies with one rule is the observed failure mode, so
+    each retry carries only the policies still missing. The list shrinks every attempt
+    until it is a single policy, which is the request a small model does answer.
+
+    Only rules for policies still awaited are kept: the retry asked about those alone,
+    so a rule for an already-answered policy would be an unsolicited duplicate.
+    """
+
+    rules: list[GuardrailRule] = []
+    metadata: list[ModelMetadata] = []
+    pending = batch
+
+    for _ in range(dependencies.compilation_max_attempts):
+        result = dependencies.model_gateway.invoke(
+            task=ModelTask.GUARDRAIL_COMPILATION,
+            prompt=guardrail_compilation_prompt(policies=pending, feedback=feedback),
+            response_model=GuardrailCompilation,
+        )
+        metadata.append(result.metadata)
+        awaited = {policy.policy_id for policy in pending}
+        rules.extend(rule for rule in result.output.rules if rule.policy_id in awaited)
+
+        covered = {rule.policy_id for rule in rules}
+        pending = tuple(policy for policy in pending if policy.policy_id not in covered)
+        if not pending:
+            break
+
+    return tuple(rules), tuple(metadata)
 
 
 def _validate_guardrails_node(state: WorkflowState) -> WorkflowState:
@@ -294,6 +332,7 @@ def build_workflow(
     feedback_store: FeedbackStore,
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE,
+    compilation_max_attempts: int = DEFAULT_COMPILATION_MAX_ATTEMPTS,
     max_span_chars: int = DEFAULT_MAX_SPAN_CHARS,
 ) -> Any:
     """Compile a workflow whose external dependencies are closed over by thin nodes."""
@@ -302,6 +341,7 @@ def build_workflow(
         model_gateway=model_gateway,
         feedback_store=feedback_store,
         compilation_batch_size=compilation_batch_size,
+        compilation_max_attempts=compilation_max_attempts,
         max_span_chars=max_span_chars,
     )
     graph = StateGraph(WorkflowState)

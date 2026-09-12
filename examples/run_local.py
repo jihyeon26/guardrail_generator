@@ -24,7 +24,11 @@ from pathlib import Path
 
 from langgraph.types import Command
 
-from sop_guardrail.application.workflow import DEFAULT_COMPILATION_BATCH_SIZE, build_workflow
+from sop_guardrail.application.workflow import (
+    DEFAULT_COMPILATION_BATCH_SIZE,
+    DEFAULT_COMPILATION_MAX_ATTEMPTS,
+    build_workflow,
+)
 from sop_guardrail.domain.models import ReviewDecision, ReviewGate, ReviewVerdict, SopDocument
 from sop_guardrail.domain.segmentation import DEFAULT_MAX_SPAN_CHARS, segment_document
 from sop_guardrail.infrastructure.documents import load_sop_document
@@ -77,6 +81,12 @@ def main(argv: list[str] | None = None) -> int:
         help="policies per guardrail-compilation model call",
     )
     parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=DEFAULT_COMPILATION_MAX_ATTEMPTS,
+        help="attempts per batch before the missing policies are reported",
+    )
+    parser.add_argument(
         "--max-span-chars",
         type=int,
         default=DEFAULT_MAX_SPAN_CHARS,
@@ -102,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         model_gateway=LocalOpenAIGateway(settings),
         feedback_store=InMemoryFeedbackStore(),
         compilation_batch_size=args.batch_size,
+        compilation_max_attempts=args.max_attempts,
         max_span_chars=args.max_span_chars,
     )
     config = {"configurable": {"thread_id": args.run_id}}
