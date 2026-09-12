@@ -12,7 +12,9 @@ only on a local `StructuredModelGateway` protocol.
   `api-version` parameter.
 - LangChain recommends `ChatOpenAI` for Azure's GA v1 API; the older
   `AzureChatOpenAI` path remains appropriate only for legacy versioned deployments.
-- The same graph can use a deterministic fake in CI and another provider adapter later.
+- The same graph can use a deterministic fake in CI and another provider adapter later;
+  see [the local provider notes](LOCAL_PROVIDER.md) for the offline adapter that
+  exercises this boundary.
 - Microsoft Entra ID supports keyless authentication and automatic token refresh.
 
 ## Authentication policy

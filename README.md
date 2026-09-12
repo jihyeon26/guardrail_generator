@@ -30,11 +30,14 @@ and explicit human approval form the release boundary.
 - Pydantic v2 for boundary contracts and JSON Schema
 - LangGraph for explicit workflow state and human interrupts
 - Azure OpenAI / Microsoft Foundry through the GA OpenAI v1 endpoint
+- A local OpenAI-compatible server (LM Studio, Ollama, vLLM) for offline development
 - A provider protocol and deterministic fake provider for offline tests
+- Optional `pypdf` text extraction for real SOP files
 - `uv`, Ruff, mypy, pytest, and GitHub Actions for reproducible CI
 
 Azure support is optional. The core package and test suite require no cloud account,
-API key, or network access.
+API key, or network access. The local adapter is part of the core package and adds no
+dependencies beyond the standard library.
 
 Python 3.12 is the minimum supported version, not a maximum. CI verifies Python 3.12,
 3.13, and 3.14; keeping the local default at the minimum catches accidental use of
@@ -66,6 +69,46 @@ uv sync --extra azure --all-groups
 Copy `.env.example` to `.env` locally and choose either Entra ID or an API key. Never
 commit `.env`.
 
+## Running against a local model
+
+The local adapter needs no extra install. Start any OpenAI-compatible server, load a
+model that supports JSON-schema-constrained decoding, and run the whole graph end to
+end with both review gates auto-approved:
+
+```powershell
+$env:LOCAL_LLM_MODEL = "qwen/qwen3.8-27b"
+uv run python examples/run_local.py
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `LOCAL_LLM_BASE_URL` | `http://127.0.0.1:1234/v1` | OpenAI-compatible endpoint |
+| `LOCAL_LLM_MODEL` | required | Model id as the server reports it |
+| `LOCAL_LLM_TIMEOUT_SECONDS` | `600` | Per-call timeout |
+| `LOCAL_LLM_DISABLE_THINKING` | unset | Send `enable_thinking: false` to reasoning models |
+| `LOCAL_LLM_API_KEY` | unset | Only for servers that require a bearer token |
+
+See [the local provider notes](docs/LOCAL_PROVIDER.md) for the behaviours that differ
+from a hosted endpoint.
+
+## Running against a real SOP file
+
+Put the file in `data/sop_inputs/` and pass its path. `.txt` and `.md` need no extra;
+`.pdf` needs the `documents` extra:
+
+```powershell
+uv sync --extra documents --all-groups
+uv run python examples/run_local.py "data/sop_inputs/procedure.pdf" --run-id ap-v1
+```
+
+The loader normalizes the extracted text once, before evidence offsets are computed,
+so a quoted span always matches the stored document. Scanned image-only PDFs are
+rejected rather than producing empty evidence.
+
+The contents of `data/sop_inputs/` are git-ignored on purpose; see
+[the folder README](data/sop_inputs/README.md) and [the clean-room
+boundary](docs/CLEAN_ROOM.md).
+
 ## Repository map
 
 ```text
@@ -77,10 +120,15 @@ tests/
   application/     # prompt, interrupt/resume, and graph routing tests
   domain/          # Pydantic contract and deterministic validation tests
   infrastructure/  # feedback storage and provider adapter tests
+examples/
+  run_local.py     # end-to-end run against a local OpenAI-compatible server
+data/
+  sop_inputs/      # untracked SOP files fed to the local runner
 docs/
   PUBLIC_SPEC.md
   ARCHITECTURE.md
   PROVIDER_DECISION.md
+  LOCAL_PROVIDER.md
   CLEAN_ROOM.md
 ```
 
@@ -91,9 +139,12 @@ See [the public specification](docs/PUBLIC_SPEC.md),
 ## Project status
 
 The first milestone is the executable workflow skeleton: typed contracts, two human
-gates, an advisory LLM gate, curated feedback memory, an Azure adapter boundary, and
-credential-free CI tests. Document parsing, a persistent database, and a user interface
-are intentionally deferred until the core state transitions are stable.
+gates, an advisory LLM gate, curated feedback memory, Azure and local-model adapters
+behind one provider boundary, text and PDF document loading, and credential-free CI
+tests. A persistent database and a user interface are intentionally deferred until the
+core state transitions are stable. Document loading is deliberately shallow: the whole
+SOP becomes one evidence span, so section-level spans and chunked extraction are the
+next step.
 
 ## License
 

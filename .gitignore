@@ -10,6 +10,12 @@ coverage.xml
 dist/
 docs/internal/
 
+# Local SOP inputs: real documents are untracked until their provenance is cleared
+# (docs/CLEAN_ROOM.md, checklist item 5). The folder and its README stay tracked.
+data/sop_inputs/*
+!data/sop_inputs/README.md
+data/runs/
+
 # Local agent instructions and private working notes
 .agents/
 .codex/
