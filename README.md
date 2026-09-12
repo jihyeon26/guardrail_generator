@@ -91,8 +91,10 @@ uv run python examples/run_local.py
 
 Guardrail compilation runs one model call per batch of policies (`--batch-size`,
 default 5). A single call over a long policy list invites a model to answer with one
-rule and stop; the coverage check then fails the run rather than publishing a release
-that enforces a fraction of the SOP.
+rule and stop. When a batch comes back incomplete it is re-asked with only the missing
+policies (`--max-attempts`, default 3), so the list shrinks until it is the one-policy
+request a small model does answer. Whatever is still missing after that fails the
+coverage check rather than publishing a release that enforces a fraction of the SOP.
 
 See [the local provider notes](docs/LOCAL_PROVIDER.md) for the behaviours that differ
 from a hosted endpoint.
