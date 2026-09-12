@@ -17,6 +17,7 @@ from sop_guardrail.domain.models import (
     ModelResult,
     ModelTask,
 )
+from sop_guardrail.infrastructure.providers.instructions import SYSTEM_INSTRUCTIONS
 
 OutputT = TypeVar("OutputT", bound=ContractModel)
 
@@ -102,7 +103,7 @@ class AzureOpenAIV1Gateway:
                 dict[str, Any],
                 structured.invoke(
                     [
-                        ("system", _SYSTEM_INSTRUCTIONS[task]),
+                        ("system", SYSTEM_INSTRUCTIONS[task]),
                         ("human", prompt),
                     ]
                 ),
@@ -129,16 +130,3 @@ class AzureOpenAIV1Gateway:
                 latency_ms=round((perf_counter() - started) * 1000),
             ),
         )
-
-
-_SYSTEM_INSTRUCTIONS = {
-    ModelTask.POLICY_EXTRACTION: (
-        "Return only schema-conforming policies explicitly supported by supplied evidence."
-    ),
-    ModelTask.GUARDRAIL_COMPILATION: (
-        "Return only schema-conforming guardrails derived from approved policies."
-    ),
-    ModelTask.GUARDRAIL_ASSESSMENT: (
-        "Act as an advisory evidence reviewer. Report uncertainty and never claim final approval."
-    ),
-}
