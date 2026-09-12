@@ -54,5 +54,6 @@ support pause/resume; they do not replace application-level idempotency or an au
 - unit tests for Pydantic invariants, evidence-reference validation, and prompt assembly;
 - graph tests for each routing branch and both interrupt/resume boundaries;
 - provider contract tests using deterministic structured outputs;
+- coverage and reference validation tests over policy and guardrail sets;
 - no-network CI by default;
 - optional live Azure smoke tests only in a separately protected workflow.

@@ -16,7 +16,8 @@ project treats that translation as a governed workflow rather than a single LLM 
 2. extract typed policy candidates that cite those spans;
 3. pause for human review;
 4. compile approved policies into typed guardrail rules;
-5. run deterministic validation and an advisory LLM review;
+5. run deterministic validation, including that every approved policy is enforced by
+   at least one rule, then an advisory LLM review;
 6. pause for final human approval;
 7. publish an immutable, versioned guardrail release;
 8. store review feedback for curated reuse in later runs.
@@ -87,6 +88,11 @@ uv run python examples/run_local.py
 | `LOCAL_LLM_TIMEOUT_SECONDS` | `600` | Per-call timeout |
 | `LOCAL_LLM_DISABLE_THINKING` | unset | Send `enable_thinking: false` to reasoning models |
 | `LOCAL_LLM_API_KEY` | unset | Only for servers that require a bearer token |
+
+Guardrail compilation runs one model call per batch of policies (`--batch-size`,
+default 5). A single call over a long policy list invites a model to answer with one
+rule and stop; the coverage check then fails the run rather than publishing a release
+that enforces a fraction of the SOP.
 
 See [the local provider notes](docs/LOCAL_PROVIDER.md) for the behaviours that differ
 from a hosted endpoint.
