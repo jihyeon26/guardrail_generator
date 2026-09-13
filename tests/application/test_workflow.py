@@ -1,3 +1,7 @@
+from collections import defaultdict
+from re import findall
+from threading import Lock
+from time import sleep
 from typing import Any, cast
 
 import pytest
@@ -13,6 +17,8 @@ from sop_guardrail.domain.models import (
     GuardrailDecision,
     GuardrailRule,
     LLMAssessment,
+    ModelMetadata,
+    ModelResult,
     ModelTask,
     PolicyCandidate,
     PolicyExtraction,
@@ -619,4 +625,111 @@ def test_an_assessment_batch_size_below_one_is_rejected() -> None:
             model_gateway=ScriptedModelGateway({}),
             feedback_store=InMemoryFeedbackStore(),
             assessment_batch_size=0,
+        )
+
+
+class _PromptDrivenGateway:
+    """Answer from the prompt rather than a queue, so concurrent calls stay sound."""
+
+    def __init__(self, evidence_id: str) -> None:
+        self.evidence_id = evidence_id
+        self._lock = Lock()
+        self.calls: dict[ModelTask, int] = defaultdict(int)
+        self.peak_in_flight = 0
+        self._in_flight = 0
+
+    def invoke(
+        self, *, task: ModelTask, prompt: str, response_model: type[Any]
+    ) -> ModelResult[Any]:
+        with self._lock:
+            self.calls[task] += 1
+            self._in_flight += 1
+            self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
+        sleep(0.02)  # hold the slot so overlap is observable
+        try:
+            asked = tuple(
+                PolicyCandidate(
+                    policy_id=policy_id,
+                    title="Control",
+                    statement="A reviewer must approve the step.",
+                    actor="reviewer",
+                    action=f"approve {policy_id}",
+                    evidence_refs=(self.evidence_id,),
+                    confidence=0.9,
+                )
+                for policy_id in sorted(set(findall(r'"policy_id": "([^"]+)"', prompt)))
+            )
+            if task is ModelTask.GUARDRAIL_COMPILATION:
+                value: Any = _rules_for(asked, self.evidence_id)
+            else:
+                value = LLMAssessment(
+                    verdict=AssessmentVerdict.PASS,
+                    summary=f"Reviewed {len(asked)} rules.",
+                )
+            return ModelResult(
+                output=response_model.model_validate(value.model_dump(mode="json")),
+                metadata=ModelMetadata(provider="prompt-driven", model="fixture-v1"),
+            )
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+
+
+def _parallel_state(concurrency: int) -> tuple[dict[str, Any], _PromptDrivenGateway]:
+    document = synthetic_document("parallel-sop")
+    evidence_id = EvidenceSpan.from_document(document).evidence_id
+    extraction = _numbered_policies("parallel-sop", 8)
+    gateway = _PromptDrivenGateway(evidence_id)
+    gateway_with_extraction = ScriptedModelGateway({ModelTask.POLICY_EXTRACTION: [extraction]})
+
+    class _Routing:
+        def invoke(self, *, task: ModelTask, prompt: str, response_model: type[Any]) -> Any:
+            if task is ModelTask.POLICY_EXTRACTION:
+                return gateway_with_extraction.invoke(
+                    task=task, prompt=prompt, response_model=response_model
+                )
+            return gateway.invoke(task=task, prompt=prompt, response_model=response_model)
+
+    graph = build_workflow(
+        model_gateway=_Routing(),
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+        compilation_batch_size=2,
+        assessment_batch_size=2,
+        max_concurrent_batches=concurrency,
+    )
+    config = _config(f"run-parallel-{concurrency}")
+    graph.invoke(
+        {"run_id": f"run-parallel-{concurrency}", "document": document.model_dump(mode="json")},
+        config,
+    )
+    graph.invoke(Command(resume=_decision(ReviewGate.POLICY, ReviewVerdict.APPROVE)), config)
+    final = cast(
+        dict[str, Any],
+        graph.invoke(Command(resume=_decision(ReviewGate.RELEASE, ReviewVerdict.APPROVE)), config),
+    )
+    return final, gateway
+
+
+def test_concurrent_batches_produce_the_same_ordered_result_as_sequential_ones() -> None:
+    sequential, serial_gateway = _parallel_state(1)
+    concurrent, parallel_gateway = _parallel_state(4)
+
+    assert serial_gateway.peak_in_flight == 1
+    assert parallel_gateway.peak_in_flight > 1
+
+    assert [rule["rule_id"] for rule in concurrent["guardrails"]] == [
+        rule["rule_id"] for rule in sequential["guardrails"]
+    ]
+    assert concurrent["status"] == sequential["status"] == "released"
+    assert concurrent["validation_errors"] == []
+    assert serial_gateway.calls == parallel_gateway.calls
+
+
+def test_a_concurrency_below_one_is_rejected() -> None:
+    with pytest.raises(ValueError, match="max_concurrent_batches must be at least 1"):
+        WorkflowDependencies(
+            model_gateway=ScriptedModelGateway({}),
+            feedback_store=InMemoryFeedbackStore(),
+            max_concurrent_batches=0,
         )
