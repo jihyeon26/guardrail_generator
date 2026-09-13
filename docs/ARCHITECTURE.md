@@ -37,8 +37,8 @@ become graph state.
 
 - `domain`: Pydantic contracts, enums, errors, ports, and pure validation.
 - `application`: prompt builders, graph state, nodes, and routing.
-- `infrastructure`: Azure, local-model, fake-model, document-loading, feedback-store,
-  and checkpointer adapters.
+- `infrastructure`: Azure, local-model, fake-model, document-loading, run-artifact,
+  feedback-store, and checkpointer adapters.
 
 The domain does not import LangGraph, LangChain, Azure, or storage implementations.
 

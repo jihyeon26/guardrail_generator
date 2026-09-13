@@ -120,6 +120,22 @@ it was read from. Before a reviewer sees a policy, deterministic validation re-r
 each cited span out of the stored document and rejects any that no longer matches — a
 citation is only worth as much as the span behind it.
 
+### Replaying one step
+
+Every node's output is written to `data/runs/<run-id>/NN-<node>.json` as the run
+streams. To work on one slow step without paying for the steps before it, replay the
+recorded steps and continue after the one you name:
+
+```powershell
+uv run python examples/run_local.py "data/sop_inputs/procedure.pdf" `
+  --run-id ap-v3 --resume-from validate_guardrails
+```
+
+These files serve a different need from a LangGraph checkpoint: they stay readable,
+they survive a code change that would invalidate a serialized checkpoint, and they let
+a single step be re-run in isolation. `--provider demo` exercises the whole graph with
+the deterministic fake gateway when no model server is running.
+
 The contents of `data/sop_inputs/` are git-ignored on purpose; see
 [the folder README](data/sop_inputs/README.md) and [the clean-room
 boundary](docs/CLEAN_ROOM.md).
@@ -139,6 +155,7 @@ examples/
   run_local.py     # end-to-end run against a local OpenAI-compatible server
 data/
   sop_inputs/      # untracked SOP files fed to the local runner
+  runs/            # untracked per-node output of each local run
 docs/
   PUBLIC_SPEC.md
   ARCHITECTURE.md
