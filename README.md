@@ -103,6 +103,14 @@ largest batched call is about 2,000 tokens, and that ceiling does not rise with 
 length of the SOP. The batch verdicts are merged worst-first, so a clean batch cannot
 soften a batch that rejected.
 
+Batches within a step are independent, so they can run concurrently
+(`--concurrency`, default 4 in this runner). Measured on one machine against LM Studio
+with a 27B model, eight compilation-shaped calls took 47.8s serially and 25.9s at four
+in flight — 1.85x, with no further gain at eight. Results are always collected in
+batch order, so concurrency changes the wall clock and nothing else. The workflow
+itself defaults to sequential: a hosted provider's rate limit should not be hit
+because a library quietly fanned out.
+
 See [the local provider notes](docs/LOCAL_PROVIDER.md) for the behaviours that differ
 from a hosted endpoint.
 
