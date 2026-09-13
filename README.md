@@ -70,16 +70,23 @@ uv sync --extra azure --all-groups
 Copy `.env.example` to `.env` locally and choose either Entra ID or an API key. Never
 commit `.env`.
 
-## Running against a local model
+## Running a SOP through the workflow
 
-The local adapter needs no extra install. Start any OpenAI-compatible server, load a
-model that supports JSON-schema-constrained decoding, and run the whole graph end to
-end with both review gates auto-approved:
+`examples/run_local.py` runs the whole graph end to end, auto-approving both review
+gates so one command exercises every node. A real reviewer supplies those decisions;
+the gates themselves are not bypassed.
+
+Start any OpenAI-compatible server (LM Studio, Ollama, vLLM) with a model that
+supports JSON-schema-constrained decoding, then:
 
 ```powershell
 $env:LOCAL_LLM_MODEL = "qwen/qwen3.8-27b"
-uv run python examples/run_local.py
+uv sync --extra documents --all-groups        # .pdf input only
+uv run python examples/run_local.py "data/sop_inputs/procedure.pdf" --run-id ap-v1
 ```
+
+With no path the built-in synthetic SOP is used. `--provider demo` runs the graph in
+seconds against the deterministic fake gateway, with no model server at all.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -89,71 +96,36 @@ uv run python examples/run_local.py
 | `LOCAL_LLM_DISABLE_THINKING` | unset | Send `enable_thinking: false` to reasoning models |
 | `LOCAL_LLM_API_KEY` | unset | Only for servers that require a bearer token |
 
-Guardrail compilation runs one model call per batch of policies (`--batch-size`,
-default 5). A single call over a long policy list invites a model to answer with one
-rule and stop. When a batch comes back incomplete it is re-asked with only the missing
-policies (`--max-attempts`, default 3), so the list shrinks until it is the one-policy
-request a small model does answer. Whatever is still missing after that fails the
-coverage check rather than publishing a release that enforces a fraction of the SOP.
+The steps that call a model are batched, and `--batch-size`, `--max-attempts`,
+`--assessment-batch-size`, `--concurrency`, and `--max-span-chars` tune them.
+[The local provider notes](docs/LOCAL_PROVIDER.md) explain what each one is for and
+what it costs, with measurements.
 
-The advisory assessment is batched the same way (`--assessment-batch-size`, default 5),
-and each batch carries only the policies and spans its rules cite. Reviewing 23 rules
-in one call built an 11,000-token prompt that a local model could not finish; the
-largest batched call is about 2,000 tokens, and that ceiling does not rise with the
-length of the SOP. The batch verdicts are merged worst-first, so a clean batch cannot
-soften a batch that rejected.
+### Input files
 
-Batches within a step are independent, so they can run concurrently
-(`--concurrency`, default 4 in this runner). Measured on one machine against LM Studio
-with a 27B model, eight compilation-shaped calls took 47.8s serially and 25.9s at four
-in flight — 1.85x, with no further gain at eight. Results are always collected in
-batch order, so concurrency changes the wall clock and nothing else. The workflow
-itself defaults to sequential: a hosted provider's rate limit should not be hit
-because a library quietly fanned out.
+Put SOP files in `data/sop_inputs/`. `.txt` and `.md` need no extra; `.pdf` needs the
+`documents` extra. The loader normalizes extracted text once, before evidence offsets
+are computed, so a quoted span always matches the stored document; scanned image-only
+PDFs are rejected rather than producing empty evidence.
 
-See [the local provider notes](docs/LOCAL_PROVIDER.md) for the behaviours that differ
-from a hosted endpoint.
-
-## Running against a real SOP file
-
-Put the file in `data/sop_inputs/` and pass its path. `.txt` and `.md` need no extra;
-`.pdf` needs the `documents` extra:
-
-```powershell
-uv sync --extra documents --all-groups
-uv run python examples/run_local.py "data/sop_inputs/procedure.pdf" --run-id ap-v1
-```
-
-The loader normalizes the extracted text once, before evidence offsets are computed,
-so a quoted span always matches the stored document. Scanned image-only PDFs are
-rejected rather than producing empty evidence.
-
-Ingest then splits the SOP on numbered headings into ordered, non-overlapping spans
-(`--max-span-chars` caps a long section, default 1500). Each span records its
-character range, its quote, and the quote's hash, and every policy must cite the spans
-it was read from. Before a reviewer sees a policy, deterministic validation re-reads
-each cited span out of the stored document and rejects any that no longer matches — a
-citation is only worth as much as the span behind it.
+The folder's contents are git-ignored on purpose — see
+[the folder README](data/sop_inputs/README.md) and
+[the clean-room boundary](docs/CLEAN_ROOM.md).
 
 ### Replaying one step
 
 Every node's output is written to `data/runs/<run-id>/NN-<node>.json` as the run
-streams. To work on one slow step without paying for the steps before it, replay the
-recorded steps and continue after the one you name:
+streams. To work on one slow step without paying for the steps before it:
 
 ```powershell
 uv run python examples/run_local.py "data/sop_inputs/procedure.pdf" `
-  --run-id ap-v3 --resume-from validate_guardrails
+  --run-id ap-v1 --resume-from validate_guardrails
 ```
 
-These files serve a different need from a LangGraph checkpoint: they stay readable,
-they survive a code change that would invalidate a serialized checkpoint, and they let
-a single step be re-run in isolation. `--provider demo` exercises the whole graph with
-the deterministic fake gateway when no model server is running.
-
-The contents of `data/sop_inputs/` are git-ignored on purpose; see
-[the folder README](data/sop_inputs/README.md) and [the clean-room
-boundary](docs/CLEAN_ROOM.md).
+These files are not a LangGraph checkpoint substitute; they serve development. They
+stay readable, they can be edited between runs, and a single step can be re-run in
+isolation. They do not survive a change to the domain contracts — a run recorded
+before a required field was added will not replay.
 
 ## Repository map
 
@@ -185,11 +157,14 @@ See [the public specification](docs/PUBLIC_SPEC.md),
 
 ## Project status
 
-The first milestone is the executable workflow skeleton: typed contracts, two human
-gates, an advisory LLM gate, curated feedback memory, Azure and local-model adapters
-behind one provider boundary, text and PDF document loading, and credential-free CI
-tests. A persistent database and a user interface are intentionally deferred until the
-core state transitions are stable.
+The workflow runs end to end: a real multi-page SOP has been loaded, split into
+evidence spans, extracted into policies, compiled into rules that cover every policy,
+reviewed, and published as a versioned release, against a local model with no cloud
+account.
+
+Deferred on purpose: a persistent database, a user interface, and durable run history.
+The curated feedback loop is implemented and tested but has not yet been exercised
+across real runs.
 
 ## License
 

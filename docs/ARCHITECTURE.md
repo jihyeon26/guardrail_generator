@@ -16,13 +16,13 @@ An LLM may propose structured data but cannot write a release or activate feedba
 
 ```text
 START
-  -> ingest
+  -> ingest (split into evidence spans)
   -> extract policies
   -> deterministic policy validation
   -> human policy gate
        revise/reject -> record pending feedback -> END
        approve       -> compile guardrails
-  -> deterministic rule validation
+  -> deterministic rule validation (references + full policy coverage)
   -> advisory LLM assessment
   -> final human gate
        revise/reject -> record pending feedback -> END
@@ -35,7 +35,8 @@ become graph state.
 
 ## Package boundaries
 
-- `domain`: Pydantic contracts, enums, errors, ports, and pure validation.
+- `domain`: Pydantic contracts, enums, errors, ports, and pure rules — evidence
+  segmentation, reference and coverage validation, and assessment merging.
 - `application`: prompt builders, graph state, nodes, and routing.
 - `infrastructure`: Azure, local-model, fake-model, document-loading, run-artifact,
   feedback-store, and checkpointer adapters.
@@ -51,12 +52,12 @@ support pause/resume; they do not replace application-level idempotency or an au
 
 ## Testing strategy
 
-- unit tests for Pydantic invariants, evidence-reference validation, and prompt assembly;
-- graph tests for each routing branch and both interrupt/resume boundaries;
+- unit tests for Pydantic invariants and prompt assembly;
+- pure-rule tests: spans tile the document and quote it exactly, references resolve,
+  every policy is covered by a rule, and the most serious batch verdict survives a merge;
+- graph tests for each routing branch, both interrupt/resume boundaries, and the
+  batched steps — retry, unsolicited rules, exhausted attempts, and concurrency
+  producing the same ordered result as sequential execution;
 - provider contract tests using deterministic structured outputs;
-- coverage and reference validation tests over policy and guardrail sets;
-- segmentation tests asserting spans tile the document and quote it exactly;
-- batch-compilation tests covering retry, unsolicited rules, and exhausted attempts;
-- assessment-merge tests asserting the most serious batch verdict survives;
 - no-network CI by default;
 - optional live Azure smoke tests only in a separately protected workflow.

@@ -18,7 +18,8 @@ deterministic, LLM, and human review boundaries.
 
 1. Ingest splits the document into ordered, non-overlapping evidence spans, each
    recording its character range, quote, and quote hash.
-2. Every policy candidate must cite one or more stable evidence-span identifiers.
+2. Every policy candidate must cite one or more stable evidence-span identifiers and
+   declare whether it requires or prohibits an action.
 3. Every guardrail rule must cite approved policies and evidence spans.
 4. Unknown evidence identifiers, duplicate identifiers, spans that no longer quote
    their document, and invalid transitions fail deterministic validation.
