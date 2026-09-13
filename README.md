@@ -96,6 +96,13 @@ policies (`--max-attempts`, default 3), so the list shrinks until it is the one-
 request a small model does answer. Whatever is still missing after that fails the
 coverage check rather than publishing a release that enforces a fraction of the SOP.
 
+The advisory assessment is batched the same way (`--assessment-batch-size`, default 5),
+and each batch carries only the policies and spans its rules cite. Reviewing 23 rules
+in one call built an 11,000-token prompt that a local model could not finish; the
+largest batched call is about 2,000 tokens, and that ceiling does not rise with the
+length of the SOP. The batch verdicts are merged worst-first, so a clean batch cannot
+soften a batch that rejected.
+
 See [the local provider notes](docs/LOCAL_PROVIDER.md) for the behaviours that differ
 from a hosted endpoint.
 

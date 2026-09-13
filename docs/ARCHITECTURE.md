@@ -57,5 +57,6 @@ support pause/resume; they do not replace application-level idempotency or an au
 - coverage and reference validation tests over policy and guardrail sets;
 - segmentation tests asserting spans tile the document and quote it exactly;
 - batch-compilation tests covering retry, unsolicited rules, and exhausted attempts;
+- assessment-merge tests asserting the most serious batch verdict survives;
 - no-network CI by default;
 - optional live Azure smoke tests only in a separately protected workflow.
