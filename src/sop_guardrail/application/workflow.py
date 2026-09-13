@@ -17,6 +17,7 @@ from sop_guardrail.application.prompts import (
     policy_extraction_prompt,
 )
 from sop_guardrail.application.state import WorkflowState
+from sop_guardrail.domain.assessment import merge_assessments
 from sop_guardrail.domain.models import (
     EvidenceSpan,
     FeedbackCard,
@@ -46,6 +47,7 @@ from sop_guardrail.domain.validation import (
 
 DEFAULT_COMPILATION_BATCH_SIZE = 5
 DEFAULT_COMPILATION_MAX_ATTEMPTS = 3
+DEFAULT_ASSESSMENT_BATCH_SIZE = 5
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class WorkflowDependencies:
     feedback_store: FeedbackStore
     compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE
     compilation_max_attempts: int = DEFAULT_COMPILATION_MAX_ATTEMPTS
+    assessment_batch_size: int = DEFAULT_ASSESSMENT_BATCH_SIZE
     max_span_chars: int = DEFAULT_MAX_SPAN_CHARS
 
     def __post_init__(self) -> None:
@@ -61,14 +64,14 @@ class WorkflowDependencies:
             raise ValueError("compilation_batch_size must be at least 1")
         if self.compilation_max_attempts < 1:
             raise ValueError("compilation_max_attempts must be at least 1")
+        if self.assessment_batch_size < 1:
+            raise ValueError("assessment_batch_size must be at least 1")
         if self.max_span_chars < 1:
             raise ValueError("max_span_chars must be at least 1")
 
 
-def _batches(
-    policies: tuple[PolicyCandidate, ...], size: int
-) -> tuple[tuple[PolicyCandidate, ...], ...]:
-    return tuple(tuple(policies[start : start + size]) for start in range(0, len(policies), size))
+def _batches[ItemT](items: tuple[ItemT, ...], size: int) -> tuple[tuple[ItemT, ...], ...]:
+    return tuple(tuple(items[start : start + size]) for start in range(0, len(items), size))
 
 
 def _document(state: WorkflowState) -> SopDocument:
@@ -246,22 +249,56 @@ def _route_guardrail_validation(state: WorkflowState) -> Literal["assess", "end"
 
 
 def _llm_assessment_node(state: WorkflowState, dependencies: WorkflowDependencies) -> WorkflowState:
+    """Review the rules in batches, each carrying only the context those rules cite.
+
+    Sending every policy, rule, and span in one call made the prompt grow with the
+    SOP until a local model could not finish it. A batch needs the rules under review
+    and nothing else, so the context stays flat as the document gets longer.
+    """
+
+    policies = _policies(state)
+    evidence = _evidence(state)
     feedback = dependencies.feedback_store.list_active(FeedbackStage.LLM_ASSESSMENT)
-    result = dependencies.model_gateway.invoke(
-        task=ModelTask.GUARDRAIL_ASSESSMENT,
-        prompt=assessment_prompt(
-            policies=_policies(state),
-            guardrails=_guardrails(state),
-            evidence=_evidence(state),
-            feedback=feedback,
-        ),
-        response_model=LLMAssessment,
-    )
+    parts: list[LLMAssessment] = []
+    metadata: list[dict[str, Any]] = []
+
+    for batch in _batches(_guardrails(state), dependencies.assessment_batch_size):
+        cited_policies = _policies_behind(batch, policies)
+        result = dependencies.model_gateway.invoke(
+            task=ModelTask.GUARDRAIL_ASSESSMENT,
+            prompt=assessment_prompt(
+                policies=cited_policies,
+                guardrails=batch,
+                evidence=_evidence_behind(batch, cited_policies, evidence),
+                feedback=feedback,
+            ),
+            response_model=LLMAssessment,
+        )
+        parts.append(result.output)
+        metadata.append(result.metadata.model_dump(mode="json"))
+
     return {
-        "llm_assessment": result.output.model_dump(mode="json"),
-        "model_runs": _append_model_run(state, result.metadata.model_dump(mode="json")),
+        "llm_assessment": merge_assessments(tuple(parts)).model_dump(mode="json"),
+        "model_runs": [*state.get("model_runs", []), *metadata],
         "status": "llm_assessed",
     }
+
+
+def _policies_behind(
+    rules: tuple[GuardrailRule, ...], policies: tuple[PolicyCandidate, ...]
+) -> tuple[PolicyCandidate, ...]:
+    wanted = {rule.policy_id for rule in rules}
+    return tuple(policy for policy in policies if policy.policy_id in wanted)
+
+
+def _evidence_behind(
+    rules: tuple[GuardrailRule, ...],
+    policies: tuple[PolicyCandidate, ...],
+    evidence: tuple[EvidenceSpan, ...],
+) -> tuple[EvidenceSpan, ...]:
+    wanted = {ref for rule in rules for ref in rule.evidence_refs}
+    wanted |= {ref for policy in policies for ref in policy.evidence_refs}
+    return tuple(span for span in evidence if span.evidence_id in wanted)
 
 
 def _release_review_node(state: WorkflowState) -> WorkflowState:
@@ -333,6 +370,7 @@ def build_workflow(
     checkpointer: BaseCheckpointSaver[Any] | None = None,
     compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE,
     compilation_max_attempts: int = DEFAULT_COMPILATION_MAX_ATTEMPTS,
+    assessment_batch_size: int = DEFAULT_ASSESSMENT_BATCH_SIZE,
     max_span_chars: int = DEFAULT_MAX_SPAN_CHARS,
 ) -> Any:
     """Compile a workflow whose external dependencies are closed over by thin nodes."""
@@ -342,6 +380,7 @@ def build_workflow(
         feedback_store=feedback_store,
         compilation_batch_size=compilation_batch_size,
         compilation_max_attempts=compilation_max_attempts,
+        assessment_batch_size=assessment_batch_size,
         max_span_chars=max_span_chars,
     )
     graph = StateGraph(WorkflowState)

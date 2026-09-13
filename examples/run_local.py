@@ -31,6 +31,7 @@ from typing import Any, cast
 from langgraph.types import Command
 
 from sop_guardrail.application.workflow import (
+    DEFAULT_ASSESSMENT_BATCH_SIZE,
     DEFAULT_COMPILATION_BATCH_SIZE,
     DEFAULT_COMPILATION_MAX_ATTEMPTS,
     build_workflow,
@@ -145,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
         help="attempts per batch before the missing policies are reported",
     )
     parser.add_argument(
+        "--assessment-batch-size",
+        type=int,
+        default=DEFAULT_ASSESSMENT_BATCH_SIZE,
+        help="rules per advisory-assessment model call",
+    )
+    parser.add_argument(
         "--max-span-chars",
         type=int,
         default=DEFAULT_MAX_SPAN_CHARS,
@@ -176,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
         feedback_store=InMemoryFeedbackStore(),
         compilation_batch_size=args.batch_size,
         compilation_max_attempts=args.max_attempts,
+        assessment_batch_size=args.assessment_batch_size,
         max_span_chars=args.max_span_chars,
     )
     config: dict[str, Any] = {"configurable": {"thread_id": args.run_id}}
