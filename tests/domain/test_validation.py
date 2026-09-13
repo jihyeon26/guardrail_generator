@@ -1,4 +1,4 @@
-from sop_guardrail.domain.models import EvidenceSpan, PolicyCandidate
+from sop_guardrail.domain.models import EvidenceSpan, PolicyCandidate, PolicyModality
 from sop_guardrail.domain.validation import (
     validate_evidence_spans,
     validate_guardrail_coverage,
@@ -34,6 +34,7 @@ def _extra_policy(policy_id: str, evidence_id: str) -> PolicyCandidate:
         policy_id=policy_id,
         title="Retention requirement",
         statement="Approval records must be retained.",
+        modality=PolicyModality.REQUIRED,
         actor="operator",
         action="retain the approval record",
         evidence_refs=(evidence_id,),

@@ -61,3 +61,33 @@ def test_compilation_and_assessment_prompts_state_their_boundaries() -> None:
     assert "No approved lessons" in compilation
     assert "cannot approve a release" in assessment
     assert passing_assessment().summary not in assessment
+
+
+def test_the_policy_prompt_names_what_is_not_a_policy() -> None:
+    """A permission and an efficiency preference both reached compilation before."""
+
+    document = synthetic_document()
+
+    prompt = policy_extraction_prompt(
+        document=document,
+        evidence=(EvidenceSpan.from_document(document),),
+        feedback=(),
+    )
+
+    assert "permissions and options" in prompt
+    assert "efficiency or convenience guidance" in prompt
+    assert "'required' or 'prohibited'" in prompt
+    assert "Prefer fewer checkable policies" in prompt
+
+
+def test_the_policy_prompt_omits_the_document_text_the_spans_already_carry() -> None:
+    document = synthetic_document()
+
+    prompt = policy_extraction_prompt(
+        document=document,
+        evidence=(EvidenceSpan.from_document(document),),
+        feedback=(),
+    )
+
+    assert document.sha256 in prompt
+    assert prompt.count(document.text) == 1

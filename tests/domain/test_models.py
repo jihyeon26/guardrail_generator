@@ -8,6 +8,7 @@ from sop_guardrail.domain.models import (
     FeedbackCard,
     FeedbackStage,
     FeedbackStatus,
+    PolicyCandidate,
     ReviewGate,
     SopDocument,
 )
@@ -44,3 +45,18 @@ def test_active_feedback_requires_approver() -> None:
             source_gate=ReviewGate.POLICY,
             status=FeedbackStatus.ACTIVE,
         )
+
+
+def test_a_policy_must_declare_whether_it_requires_or_forbids() -> None:
+    """Neither member fits a permission, so the field is what keeps one out."""
+
+    with pytest.raises(ValidationError, match="modality"):
+        PolicyCandidate(
+            policy_id="policy-permission",
+            title="Payment Method Selection",
+            statement="Payments can be made via EFT, check, or credit card.",
+            actor="accounts payable staff",
+            action="make payments via EFT, check, or credit card",
+            evidence_refs=("evidence-1",),
+            confidence=0.9,
+        )  # type: ignore[call-arg]
