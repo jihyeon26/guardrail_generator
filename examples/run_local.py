@@ -152,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
         help="rules per advisory-assessment model call",
     )
     parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help="batches in flight at once; a local server has no rate limit to trip",
+    )
+    parser.add_argument(
         "--max-span-chars",
         type=int,
         default=DEFAULT_MAX_SPAN_CHARS,
@@ -184,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
         compilation_batch_size=args.batch_size,
         compilation_max_attempts=args.max_attempts,
         assessment_batch_size=args.assessment_batch_size,
+        max_concurrent_batches=args.concurrency,
         max_span_chars=args.max_span_chars,
     )
     config: dict[str, Any] = {"configurable": {"thread_id": args.run_id}}

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Literal
@@ -27,6 +29,7 @@ from sop_guardrail.domain.models import (
     GuardrailRule,
     LLMAssessment,
     ModelMetadata,
+    ModelResult,
     ModelTask,
     PolicyCandidate,
     PolicyExtraction,
@@ -48,6 +51,9 @@ from sop_guardrail.domain.validation import (
 DEFAULT_COMPILATION_BATCH_SIZE = 5
 DEFAULT_COMPILATION_MAX_ATTEMPTS = 3
 DEFAULT_ASSESSMENT_BATCH_SIZE = 5
+# Sequential by default: a hosted provider's rate limit should not be hit because a
+# workflow quietly fanned out. A caller that knows its provider opts in.
+DEFAULT_MAX_CONCURRENT_BATCHES = 1
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,7 @@ class WorkflowDependencies:
     compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE
     compilation_max_attempts: int = DEFAULT_COMPILATION_MAX_ATTEMPTS
     assessment_batch_size: int = DEFAULT_ASSESSMENT_BATCH_SIZE
+    max_concurrent_batches: int = DEFAULT_MAX_CONCURRENT_BATCHES
     max_span_chars: int = DEFAULT_MAX_SPAN_CHARS
 
     def __post_init__(self) -> None:
@@ -66,12 +73,32 @@ class WorkflowDependencies:
             raise ValueError("compilation_max_attempts must be at least 1")
         if self.assessment_batch_size < 1:
             raise ValueError("assessment_batch_size must be at least 1")
+        if self.max_concurrent_batches < 1:
+            raise ValueError("max_concurrent_batches must be at least 1")
         if self.max_span_chars < 1:
             raise ValueError("max_span_chars must be at least 1")
 
 
 def _batches[ItemT](items: tuple[ItemT, ...], size: int) -> tuple[tuple[ItemT, ...], ...]:
     return tuple(tuple(items[start : start + size]) for start in range(0, len(items), size))
+
+
+def _map_batches[BatchT, ResultT](
+    batches: tuple[BatchT, ...],
+    worker: Callable[[BatchT], ResultT],
+    max_concurrent: int,
+) -> tuple[ResultT, ...]:
+    """Run independent batches, returning results in batch order either way.
+
+    Batches never read each other's output, so the only thing concurrency may not
+    change is the order results are merged in; that is why the results are always
+    collected in the order the batches were cut.
+    """
+
+    if max_concurrent == 1 or len(batches) < 2:
+        return tuple(worker(batch) for batch in batches)
+    with ThreadPoolExecutor(max_workers=min(max_concurrent, len(batches))) as pool:
+        return tuple(pool.map(worker, batches))
 
 
 def _document(state: WorkflowState) -> SopDocument:
@@ -182,8 +209,12 @@ def _compile_guardrails_node(
     rules: list[dict[str, Any]] = []
     metadata: list[dict[str, Any]] = []
 
-    for batch in _batches(policies, dependencies.compilation_batch_size):
-        batch_rules, batch_metadata = _compile_batch(batch, dependencies, feedback)
+    results = _map_batches(
+        _batches(policies, dependencies.compilation_batch_size),
+        lambda batch: _compile_batch(batch, dependencies, feedback),
+        dependencies.max_concurrent_batches,
+    )
+    for batch_rules, batch_metadata in results:
         rules.extend(rule.model_dump(mode="json") for rule in batch_rules)
         metadata.extend(item.model_dump(mode="json") for item in batch_metadata)
 
@@ -262,9 +293,9 @@ def _llm_assessment_node(state: WorkflowState, dependencies: WorkflowDependencie
     parts: list[LLMAssessment] = []
     metadata: list[dict[str, Any]] = []
 
-    for batch in _batches(_guardrails(state), dependencies.assessment_batch_size):
+    def assess(batch: tuple[GuardrailRule, ...]) -> ModelResult[LLMAssessment]:
         cited_policies = _policies_behind(batch, policies)
-        result = dependencies.model_gateway.invoke(
+        return dependencies.model_gateway.invoke(
             task=ModelTask.GUARDRAIL_ASSESSMENT,
             prompt=assessment_prompt(
                 policies=cited_policies,
@@ -274,6 +305,12 @@ def _llm_assessment_node(state: WorkflowState, dependencies: WorkflowDependencie
             ),
             response_model=LLMAssessment,
         )
+
+    for result in _map_batches(
+        _batches(_guardrails(state), dependencies.assessment_batch_size),
+        assess,
+        dependencies.max_concurrent_batches,
+    ):
         parts.append(result.output)
         metadata.append(result.metadata.model_dump(mode="json"))
 
@@ -371,6 +408,7 @@ def build_workflow(
     compilation_batch_size: int = DEFAULT_COMPILATION_BATCH_SIZE,
     compilation_max_attempts: int = DEFAULT_COMPILATION_MAX_ATTEMPTS,
     assessment_batch_size: int = DEFAULT_ASSESSMENT_BATCH_SIZE,
+    max_concurrent_batches: int = DEFAULT_MAX_CONCURRENT_BATCHES,
     max_span_chars: int = DEFAULT_MAX_SPAN_CHARS,
 ) -> Any:
     """Compile a workflow whose external dependencies are closed over by thin nodes."""
@@ -381,6 +419,7 @@ def build_workflow(
         compilation_batch_size=compilation_batch_size,
         compilation_max_attempts=compilation_max_attempts,
         assessment_batch_size=assessment_batch_size,
+        max_concurrent_batches=max_concurrent_batches,
         max_span_chars=max_span_chars,
     )
     graph = StateGraph(WorkflowState)
