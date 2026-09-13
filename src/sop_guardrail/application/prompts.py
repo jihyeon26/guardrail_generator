@@ -77,8 +77,14 @@ def assessment_prompt(
 ) -> str:
     return (
         "Review proposed guardrails against supplied evidence. Identify unsupported claims, "
-        "Find coverage gaps, ambiguity, and unverifiable conditions. Abstain if evidence is thin. "
-        "This assessment is advisory and cannot approve a release.\n\n"
+        "coverage gaps, ambiguity, and unverifiable conditions. Abstain if evidence is thin. "
+        "This assessment is advisory and cannot approve a release.\n"
+        "The findings are the point of this review: report every material problem you find, "
+        "up to five, each one sentence naming the rule it concerns. A review that finds nothing "
+        "worth reporting should say so in the summary.\n"
+        "Spend words on findings, not around them. Keep the summary to one sentence. Give "
+        "uncertainty only when it would change the verdict. Do not restate the rules, quote the "
+        "evidence back, or describe the task you were given.\n\n"
         f"POLICIES\n{_json(policies)}\n\nGUARDRAILS\n{_json(guardrails)}\n\n"
         f"EVIDENCE\n{_json(evidence)}\n\n"
         f"APPROVED_FEEDBACK\n{_feedback_section(feedback)}"

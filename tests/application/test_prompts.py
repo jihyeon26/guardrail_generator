@@ -91,3 +91,21 @@ def test_the_policy_prompt_omits_the_document_text_the_spans_already_carry() -> 
 
     assert document.sha256 in prompt
     assert prompt.count(document.text) == 1
+
+
+def test_the_assessment_prompt_protects_findings_from_the_brevity_budget() -> None:
+    """Asking only for brevity made the model report no findings at all."""
+
+    document = synthetic_document()
+    policies = policy_extraction(document).policies
+
+    prompt = assessment_prompt(
+        policies=policies,
+        guardrails=guardrail_compilation(document).rules,
+        evidence=(EvidenceSpan.from_document(document),),
+        feedback=(),
+    )
+
+    assert "findings are the point" in prompt
+    assert "Spend words on findings, not around them" in prompt
+    assert "Keep the summary to one sentence" in prompt
