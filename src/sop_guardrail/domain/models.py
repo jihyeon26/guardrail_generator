@@ -40,6 +40,17 @@ class FeedbackStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class PolicyModality(StrEnum):
+    """What the SOP obliges of the actor.
+
+    A permission or an efficiency preference fits neither member, so requiring this
+    field makes the extractor commit rather than turn every sentence into a policy.
+    """
+
+    REQUIRED = "required"
+    PROHIBITED = "prohibited"
+
+
 class GuardrailDecision(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
@@ -140,6 +151,7 @@ class PolicyCandidate(ContractModel):
     policy_id: str = Field(min_length=1)
     title: str = Field(min_length=1)
     statement: str = Field(min_length=1)
+    modality: PolicyModality
     actor: str = Field(min_length=1)
     action: str = Field(min_length=1)
     condition: str | None = None

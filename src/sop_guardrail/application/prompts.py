@@ -35,9 +35,18 @@ def policy_extraction_prompt(
     *, document: BaseModel, evidence: tuple[BaseModel, ...], feedback: tuple[FeedbackCard, ...]
 ) -> str:
     return (
-        "Extract explicit normative policies from the SOP. Do not infer missing obligations. "
-        "The evidence spans below are the SOP, split into sections. Every policy must cite the "
-        "evidence_id values of the spans it was read from, and no others.\n\n"
+        "Extract only normative obligations. A policy requires a named actor to do "
+        "something, or forbids it, in a way a reviewer could check.\n"
+        "Do not extract, and do not rewrite into a policy:\n"
+        "- permissions and options ('may', 'can', 'is allowed to', 'depending on preference');\n"
+        "- efficiency or convenience guidance ('to streamline', 'to take advantage of');\n"
+        "- definitions, scope statements, and descriptions of who a role is;\n"
+        "- a restatement of an obligation already extracted.\n"
+        "Set modality to 'required' or 'prohibited'. If neither fits the text, it is not a "
+        "policy; leave it out. Prefer fewer checkable policies over covering every sentence.\n"
+        "Do not infer missing obligations. The evidence spans below are the SOP, split into "
+        "sections. Every policy must cite the evidence_id values of the spans it was read "
+        "from, and no others.\n\n"
         f"DOCUMENT\n{_document_header(document)}\n\n"
         f"EVIDENCE ({len(evidence)} spans)\n{_json(evidence)}\n\n"
         f"APPROVED_FEEDBACK\n{_feedback_section(feedback)}"

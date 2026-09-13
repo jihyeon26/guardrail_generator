@@ -19,6 +19,7 @@ from sop_guardrail.domain.models import (
     ModelTask,
     PolicyCandidate,
     PolicyExtraction,
+    PolicyModality,
     RuleTestCase,
     Severity,
 )
@@ -88,6 +89,7 @@ class DemoModelGateway:
                         policy_id="policy-demo-1",
                         title="Manual review requirement",
                         statement="The described operation requires an authorized review.",
+                        modality=PolicyModality.REQUIRED,
                         actor="authorized reviewer",
                         action="review the operation",
                         condition="before completion",
