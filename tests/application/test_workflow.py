@@ -6,11 +6,13 @@ from langgraph.types import Command
 
 from sop_guardrail.application.workflow import WorkflowDependencies, build_workflow
 from sop_guardrail.domain.models import (
+    AssessmentVerdict,
     EvidenceSpan,
     FeedbackStage,
     GuardrailCompilation,
     GuardrailDecision,
     GuardrailRule,
+    LLMAssessment,
     ModelTask,
     PolicyCandidate,
     PolicyExtraction,
@@ -556,4 +558,65 @@ def test_a_max_attempts_below_one_is_rejected() -> None:
             model_gateway=ScriptedModelGateway({}),
             feedback_store=InMemoryFeedbackStore(),
             compilation_max_attempts=0,
+        )
+
+
+def test_assessment_batches_carry_only_the_context_their_rules_cite() -> None:
+    document = synthetic_document("assessed-sop")
+    evidence_id = EvidenceSpan.from_document(document).evidence_id
+    extraction = _numbered_policies("assessed-sop", 4)
+    gateway = ScriptedModelGateway(
+        {
+            ModelTask.POLICY_EXTRACTION: [extraction],
+            ModelTask.GUARDRAIL_COMPILATION: [_rules_for(extraction.policies, evidence_id)],
+            ModelTask.GUARDRAIL_ASSESSMENT: [
+                LLMAssessment(verdict=AssessmentVerdict.PASS, summary="First half holds."),
+                LLMAssessment(
+                    verdict=AssessmentVerdict.ABSTAIN,
+                    summary="Second half is thin.",
+                    uncertainty="The evidence does not define the threshold.",
+                ),
+            ],
+        }
+    )
+    graph = build_workflow(
+        model_gateway=gateway,
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+        compilation_batch_size=4,
+        assessment_batch_size=2,
+    )
+    config = _config("run-assessed")
+
+    graph.invoke({"run_id": "run-assessed", "document": document.model_dump(mode="json")}, config)
+    state = cast(
+        dict[str, Any],
+        graph.invoke(Command(resume=_decision(ReviewGate.POLICY, ReviewVerdict.APPROVE)), config),
+    )
+
+    first, second = gateway.prompts[ModelTask.GUARDRAIL_ASSESSMENT]
+    assert "policy-00" in first
+    assert "policy-01" in first
+    assert "policy-02" not in first
+    assert "policy-02" in second
+    assert "policy-03" in second
+    assert "policy-00" not in second
+    # Every batch still receives the span its rules cite.
+    assert evidence_id in first
+    assert evidence_id in second
+
+    # The abstaining batch decides the merged verdict.
+    assert state["llm_assessment"]["verdict"] == "abstain"
+    assert state["llm_assessment"]["summary"] == "First half holds. Second half is thin."
+    assert state["llm_assessment"]["uncertainty"] == "The evidence does not define the threshold."
+    # extraction + one compilation + two assessment calls
+    assert len(state["model_runs"]) == 4
+
+
+def test_an_assessment_batch_size_below_one_is_rejected() -> None:
+    with pytest.raises(ValueError, match="assessment_batch_size must be at least 1"):
+        WorkflowDependencies(
+            model_gateway=ScriptedModelGateway({}),
+            feedback_store=InMemoryFeedbackStore(),
+            assessment_batch_size=0,
         )
