@@ -199,10 +199,18 @@ class LLMAssessment(ContractModel):
 
 
 class ReviewRequest(ContractModel):
+    """What a human is handed at a gate.
+
+    The advisory assessment exists only to inform this decision, so it travels with
+    the request. A reviewer who is shown a verdict but not the findings behind it is
+    approving blind.
+    """
+
     run_id: str = Field(min_length=1)
     gate: ReviewGate
     item_ids: tuple[str, ...] = Field(min_length=1)
     summary: str = Field(min_length=1)
+    assessment: LLMAssessment | None = None
 
 
 class ReviewDecision(ContractModel):
@@ -248,4 +256,7 @@ class GuardrailRelease(ContractModel):
     source_document_id: str = Field(min_length=1)
     rules: tuple[GuardrailRule, ...] = Field(min_length=1)
     approved_by: str = Field(min_length=1)
+    # The advisory verdict this release was approved over, so the artifact does not
+    # hide that a human released it while the reviewer abstained or objected.
+    advisory_verdict: AssessmentVerdict
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -11,6 +11,8 @@ The workflow separates five concerns:
 5. **Learning**: quarantined feedback promoted only after approval.
 
 An LLM may propose structured data but cannot write a release or activate feedback.
+It can only inform: the advisory assessment travels to the human release gate in full,
+and the release records the verdict a human approved over.
 
 ## Workflow
 

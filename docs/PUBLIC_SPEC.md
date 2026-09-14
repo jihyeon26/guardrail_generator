@@ -29,7 +29,9 @@ deterministic, LLM, and human review boundaries.
    nothing, fails deterministic validation.
 6. Policy candidates require an explicit human approve, revise, or reject decision.
 7. Guardrail releases require an explicit final human approval after LLM assessment.
-8. LLM assessment is advisory and must report uncertainty and cited evidence.
+8. LLM assessment is advisory and must report uncertainty and cited evidence. Its
+   verdict and every finding reach the human release gate, and the published release
+   records the verdict it was approved over.
 9. Review feedback starts as pending and cannot affect later runs until approved.
 10. Each model call and released artifact carries provider-neutral provenance metadata.
 11. Tests run without cloud credentials or network access.

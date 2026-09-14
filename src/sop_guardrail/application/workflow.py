@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from sop_guardrail.domain.models import (
     ReviewGate,
     ReviewRequest,
     ReviewVerdict,
+    Severity,
     SopDocument,
 )
 from sop_guardrail.domain.ports import FeedbackStore, StructuredModelGateway
@@ -346,7 +348,11 @@ def _release_review_node(state: WorkflowState) -> WorkflowState:
         run_id=state["run_id"],
         gate=ReviewGate.RELEASE,
         item_ids=tuple(item.rule_id for item in _guardrails(state)),
-        summary=f"Final release review. Advisory LLM verdict: {assessment.verdict.value}.",
+        summary=(
+            f"Final release review of {_count(len(_guardrails(state)), 'rule')}. "
+            f"Advisory verdict: {assessment.verdict.value}; {_finding_tally(assessment)}."
+        ),
+        assessment=assessment,
     )
     decision = ReviewDecision.model_validate(interrupt(request.model_dump(mode="json")))
     if decision.gate is not ReviewGate.RELEASE:
@@ -355,6 +361,22 @@ def _release_review_node(state: WorkflowState) -> WorkflowState:
         "release_review": decision.model_dump(mode="json"),
         "status": f"release_{decision.verdict.value}",
     }
+
+
+def _count(total: int, noun: str) -> str:
+    return f"{total} {noun}" if total == 1 else f"{total} {noun}s"
+
+
+def _finding_tally(assessment: LLMAssessment) -> str:
+    if not assessment.findings:
+        return "no findings"
+    by_severity = Counter(finding.severity for finding in assessment.findings)
+    counted = ", ".join(
+        f"{by_severity[severity]} {severity.value}"
+        for severity in reversed(Severity)
+        if by_severity[severity]
+    )
+    return f"{_count(len(assessment.findings), 'finding')} ({counted})"
 
 
 def _route_release_review(state: WorkflowState) -> Literal["publish", "feedback"]:
@@ -398,6 +420,7 @@ def _publish_node(state: WorkflowState) -> WorkflowState:
         source_document_id=_document(state).document_id,
         rules=_guardrails(state),
         approved_by=decision.reviewer,
+        advisory_verdict=LLMAssessment.model_validate(state["llm_assessment"]).verdict,
     )
     return {"release": release.model_dump(mode="json"), "status": "released"}
 

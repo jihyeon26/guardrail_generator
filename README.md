@@ -16,9 +16,9 @@ project treats that translation as a governed workflow rather than a single LLM 
 2. extract typed policy candidates that cite those spans;
 3. pause for human review;
 4. compile approved policies into typed guardrail rules;
-5. run deterministic validation, including that every approved policy is enforced by
-   at least one rule, then an advisory LLM review;
-6. pause for final human approval;
+5. run deterministic validation — every approved policy is enforced by at least one
+   rule, and every rule can actually refuse something — then an advisory LLM review;
+6. pause for final human approval, with the assessment's findings in hand;
 7. publish an immutable, versioned guardrail release;
 8. store review feedback for curated reuse in later runs.
 

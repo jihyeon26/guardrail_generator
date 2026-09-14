@@ -10,6 +10,7 @@ from langgraph.types import Command
 
 from sop_guardrail.application.workflow import WorkflowDependencies, build_workflow
 from sop_guardrail.domain.models import (
+    AssessmentFinding,
     AssessmentVerdict,
     EvidenceSpan,
     FeedbackStage,
@@ -792,3 +793,106 @@ def test_a_rule_that_blocks_nothing_stops_the_release() -> None:
     ]
     assert "release" not in final
     assert gateway.prompts[ModelTask.GUARDRAIL_ASSESSMENT] == []
+
+
+def _assessment_with_findings() -> LLMAssessment:
+    return LLMAssessment(
+        verdict=AssessmentVerdict.ABSTAIN,
+        summary="The evidence is thin for two of the rules.",
+        findings=(
+            AssessmentFinding(
+                code="COVERAGE_GAP",
+                message="rule-require-review omits the approval record requirement.",
+                severity=Severity.HIGH,
+            ),
+            AssessmentFinding(
+                code="AMBIGUITY",
+                message="'high-impact' is not defined by the cited evidence.",
+                severity=Severity.MEDIUM,
+            ),
+        ),
+        uncertainty="A domain reviewer must confirm the intended control.",
+    )
+
+
+def _run_to_release_gate(run_id: str) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    document = synthetic_document()
+    gateway = ScriptedModelGateway(
+        {
+            ModelTask.POLICY_EXTRACTION: [policy_extraction(document)],
+            ModelTask.GUARDRAIL_COMPILATION: [guardrail_compilation(document)],
+            ModelTask.GUARDRAIL_ASSESSMENT: [_assessment_with_findings()],
+        }
+    )
+    graph = build_workflow(
+        model_gateway=gateway,
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+    )
+    config = _config(run_id)
+    graph.invoke({"run_id": run_id, "document": document.model_dump(mode="json")}, config)
+    state = cast(
+        dict[str, Any],
+        graph.invoke(Command(resume=_decision(ReviewGate.POLICY, ReviewVerdict.APPROVE)), config),
+    )
+    return graph, config, cast(dict[str, Any], state["__interrupt__"][0].value)
+
+
+def test_the_release_gate_hands_the_reviewer_the_findings() -> None:
+    """The reviewer used to get the verdict alone, with the findings left in state."""
+
+    _, _, request = _run_to_release_gate("run-gate-findings")
+
+    assert request["gate"] == "release"
+    assert request["assessment"]["verdict"] == "abstain"
+    assert [finding["code"] for finding in request["assessment"]["findings"]] == [
+        "COVERAGE_GAP",
+        "AMBIGUITY",
+    ]
+    assert request["assessment"]["uncertainty"]
+
+
+def test_the_release_summary_counts_the_findings_by_severity() -> None:
+    _, _, request = _run_to_release_gate("run-gate-summary")
+
+    assert request["summary"] == (
+        "Final release review of 1 rule. Advisory verdict: abstain; 2 findings (1 high, 1 medium)."
+    )
+
+
+def test_a_release_records_the_advisory_verdict_it_was_approved_over() -> None:
+    """The published artifact must not hide an approval made over an abstention."""
+
+    graph, config, _ = _run_to_release_gate("run-gate-verdict")
+
+    final = cast(
+        dict[str, Any],
+        graph.invoke(Command(resume=_decision(ReviewGate.RELEASE, ReviewVerdict.APPROVE)), config),
+    )
+
+    assert final["status"] == "released"
+    assert final["release"]["advisory_verdict"] == "abstain"
+
+
+def test_a_clean_assessment_says_so_in_the_summary() -> None:
+    document = synthetic_document()
+    gateway = ScriptedModelGateway(
+        {
+            ModelTask.POLICY_EXTRACTION: [policy_extraction(document)],
+            ModelTask.GUARDRAIL_COMPILATION: [guardrail_compilation(document)],
+            ModelTask.GUARDRAIL_ASSESSMENT: [passing_assessment()],
+        }
+    )
+    graph = build_workflow(
+        model_gateway=gateway,
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+    )
+    config = _config("run-gate-clean")
+    graph.invoke({"run_id": "run-gate-clean", "document": document.model_dump(mode="json")}, config)
+    state = cast(
+        dict[str, Any],
+        graph.invoke(Command(resume=_decision(ReviewGate.POLICY, ReviewVerdict.APPROVE)), config),
+    )
+
+    assert "no findings" in state["__interrupt__"][0].value["summary"]
