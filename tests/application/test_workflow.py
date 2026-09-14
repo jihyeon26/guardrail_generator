@@ -737,3 +737,58 @@ def test_a_concurrency_below_one_is_rejected() -> None:
             feedback_store=InMemoryFeedbackStore(),
             max_concurrent_batches=0,
         )
+
+
+def test_a_rule_that_blocks_nothing_stops_the_release() -> None:
+    """A rule can cite everything correctly and still enforce nothing."""
+
+    document = synthetic_document("inert-sop")
+    evidence_id = EvidenceSpan.from_document(document).evidence_id
+    extraction = _numbered_policies("inert-sop", 1)
+    inert = GuardrailCompilation(
+        rules=(
+            GuardrailRule(
+                rule_id="rule-inert",
+                policy_id="policy-00",
+                decision=GuardrailDecision.ALLOW,
+                condition="the reviewer approved the step",
+                rationale="The policy requires approval.",
+                severity=Severity.MEDIUM,
+                evidence_refs=(evidence_id,),
+                test_cases=(
+                    RuleTestCase(
+                        name="approved step is allowed",
+                        input_summary="step with a recorded approval",
+                        expected_decision=GuardrailDecision.ALLOW,
+                    ),
+                ),
+            ),
+        )
+    )
+    gateway = ScriptedModelGateway(
+        {
+            ModelTask.POLICY_EXTRACTION: [extraction],
+            ModelTask.GUARDRAIL_COMPILATION: [inert],
+            ModelTask.GUARDRAIL_ASSESSMENT: [passing_assessment()],
+        }
+    )
+    graph = build_workflow(
+        model_gateway=gateway,
+        feedback_store=InMemoryFeedbackStore(),
+        checkpointer=InMemorySaver(),
+    )
+    config = _config("run-inert")
+
+    graph.invoke({"run_id": "run-inert", "document": document.model_dump(mode="json")}, config)
+    final = cast(
+        dict[str, Any],
+        graph.invoke(Command(resume=_decision(ReviewGate.POLICY, ReviewVerdict.APPROVE)), config),
+    )
+
+    assert final["status"] == "guardrail_validation_failed"
+    assert final["validation_errors"] == [
+        "rule rule-inert decides 'allow', so it blocks nothing",
+        "rule rule-inert has no test case that denies or escalates, so nothing can trip it",
+    ]
+    assert "release" not in final
+    assert gateway.prompts[ModelTask.GUARDRAIL_ASSESSMENT] == []

@@ -57,9 +57,15 @@ def guardrail_compilation_prompt(
     *, policies: tuple[BaseModel, ...], feedback: tuple[FeedbackCard, ...]
 ) -> str:
     return (
-        "Compile each approved policy into a testable rule. Preserve policy_id and evidence_refs. "
-        "Use escalation when the policy cannot be enforced deterministically, and provide at least "
-        "one test case per rule.\n"
+        "Compile each approved policy into a testable rule. Preserve policy_id and "
+        "evidence_refs.\n"
+        "The condition describes the violation the guardrail must stop, never the compliant "
+        "case. For a 'required' policy the violation is that the required action did not "
+        "happen; for a 'prohibited' policy it is that the forbidden action did. Set decision "
+        "to deny, or to escalate when the policy cannot be enforced deterministically; a rule "
+        "that only allows something stops nothing.\n"
+        "Give at least two test cases: one violating input expecting that denial or "
+        "escalation, and one compliant input expecting allow.\n"
         "Return one rule for every policy listed below and no rule for any other policy. "
         "Policies arrive in batches, so derive each rule_id from the policy_id it enforces to "
         "keep rule ids unique across the whole run.\n\n"

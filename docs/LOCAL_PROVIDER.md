@@ -83,6 +83,13 @@ that findings are the point and that the summary is what should be short, the sa
 batch produced five specific findings in 498 tokens, against 1,494 tokens before any
 instruction.
 
+**Compilation asks for the violation, not the compliant case.** Left to itself the
+model restates the policy as the situation that is fine and allows it — a rule that
+cites its policy and evidence, carries a test case, and can never fire. Nineteen of
+thirty-two rules in one run were this shape. The prompt now asks for the condition
+that must be stopped, and deterministic validation rejects any rule that decides
+`allow` or whose test cases never expect a refusal.
+
 **Extraction asks for obligations, not sentences.** `PolicyCandidate.modality` forces
 each policy to be `required` or `prohibited`. A permission ("payments can be made via
 EFT") fits neither, which is what keeps it out; a rule cannot be written for it, and

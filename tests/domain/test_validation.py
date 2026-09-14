@@ -1,7 +1,16 @@
-from sop_guardrail.domain.models import EvidenceSpan, PolicyCandidate, PolicyModality
+from sop_guardrail.domain.models import (
+    EvidenceSpan,
+    GuardrailDecision,
+    GuardrailRule,
+    PolicyCandidate,
+    PolicyModality,
+    RuleTestCase,
+    Severity,
+)
 from sop_guardrail.domain.validation import (
     validate_evidence_spans,
     validate_guardrail_coverage,
+    validate_guardrail_enforcement,
     validate_guardrail_references,
     validate_policy_references,
 )
@@ -133,3 +142,62 @@ def test_duplicate_span_ids_are_reported() -> None:
     errors = validate_evidence_spans((span, span), document)
 
     assert errors[0] == f"duplicate evidence ids: ['{span.evidence_id}']"
+
+
+def _rule_with(decision: GuardrailDecision, *expected: GuardrailDecision) -> GuardrailRule:
+    return GuardrailRule(
+        rule_id="rule-under-test",
+        policy_id="policy-review-approval",
+        decision=decision,
+        condition="a high-impact change has no recorded reviewer approval",
+        rationale="The SOP requires approval before completion.",
+        severity=Severity.HIGH,
+        evidence_refs=("evidence-1",),
+        test_cases=tuple(
+            RuleTestCase(
+                name=f"case {index}",
+                input_summary=f"input {index}",
+                expected_decision=outcome,
+            )
+            for index, outcome in enumerate(expected)
+        ),
+    )
+
+
+def test_an_enforcing_rule_passes() -> None:
+    rule = _rule_with(
+        GuardrailDecision.ESCALATE, GuardrailDecision.ESCALATE, GuardrailDecision.ALLOW
+    )
+
+    assert validate_guardrail_enforcement((rule,)) == ()
+
+
+def test_a_rule_that_only_allows_is_reported() -> None:
+    """Observed shape: the condition states the compliant case and permits it."""
+
+    rule = _rule_with(GuardrailDecision.ALLOW, GuardrailDecision.ALLOW)
+
+    assert validate_guardrail_enforcement((rule,)) == (
+        "rule rule-under-test decides 'allow', so it blocks nothing",
+        "rule rule-under-test has no test case that denies or escalates, so nothing can trip it",
+    )
+
+
+def test_a_denying_rule_with_no_violating_test_case_is_reported() -> None:
+    """The decision alone is not evidence that any input reaches it."""
+
+    rule = _rule_with(GuardrailDecision.DENY, GuardrailDecision.ALLOW)
+
+    assert validate_guardrail_enforcement((rule,)) == (
+        "rule rule-under-test has no test case that denies or escalates, so nothing can trip it",
+    )
+
+
+def test_an_allow_rule_that_documents_the_violation_is_still_reported() -> None:
+    """A test case cannot enforce anything; only the rule's own decision can."""
+
+    rule = _rule_with(GuardrailDecision.ALLOW, GuardrailDecision.ALLOW, GuardrailDecision.DENY)
+
+    assert validate_guardrail_enforcement((rule,)) == (
+        "rule rule-under-test decides 'allow', so it blocks nothing",
+    )

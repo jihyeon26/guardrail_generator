@@ -109,3 +109,17 @@ def test_the_assessment_prompt_protects_findings_from_the_brevity_budget() -> No
     assert "findings are the point" in prompt
     assert "Spend words on findings, not around them" in prompt
     assert "Keep the summary to one sentence" in prompt
+
+
+def test_the_compilation_prompt_asks_for_the_violation_not_the_compliant_case() -> None:
+    """Compiling the compliant case produced rules that could never fire."""
+
+    document = synthetic_document()
+
+    prompt = guardrail_compilation_prompt(
+        policies=policy_extraction(document).policies, feedback=()
+    )
+
+    assert "describes the violation the guardrail must stop" in prompt
+    assert "a rule that only allows something stops nothing" in prompt
+    assert "one violating input expecting that denial or escalation" in prompt

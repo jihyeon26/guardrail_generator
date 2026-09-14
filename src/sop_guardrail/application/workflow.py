@@ -44,6 +44,7 @@ from sop_guardrail.domain.segmentation import DEFAULT_MAX_SPAN_CHARS, segment_do
 from sop_guardrail.domain.validation import (
     validate_evidence_spans,
     validate_guardrail_coverage,
+    validate_guardrail_enforcement,
     validate_guardrail_references,
     validate_policy_references,
 )
@@ -268,6 +269,7 @@ def _validate_guardrails_node(state: WorkflowState) -> WorkflowState:
     errors = (
         *validate_guardrail_references(guardrails, policies, _evidence(state)),
         *validate_guardrail_coverage(guardrails, policies),
+        *validate_guardrail_enforcement(guardrails),
     )
     return {
         "validation_errors": list(errors),
