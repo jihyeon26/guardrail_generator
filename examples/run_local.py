@@ -40,7 +40,7 @@ from sop_guardrail.domain.models import ReviewDecision, ReviewGate, ReviewVerdic
 from sop_guardrail.domain.segmentation import DEFAULT_MAX_SPAN_CHARS, segment_document
 from sop_guardrail.infrastructure.artifacts import RunArtifactStore
 from sop_guardrail.infrastructure.documents import load_sop_document
-from sop_guardrail.infrastructure.feedback import InMemoryFeedbackStore
+from sop_guardrail.infrastructure.feedback import InMemoryFeedbackStore, JsonFeedbackStore
 from sop_guardrail.infrastructure.providers.demo import DemoModelGateway
 from sop_guardrail.infrastructure.providers.local_openai import (
     LocalOpenAIGateway,
@@ -55,7 +55,17 @@ SAMPLE_SOP = (
 )
 
 
-def _approval(gate: ReviewGate) -> dict[str, object]:
+def _decision(gate: ReviewGate, args: argparse.Namespace) -> dict[str, object]:
+    """Approve, unless this is the gate the operator asked to send back."""
+
+    if args.revise_gate == gate.value:
+        return ReviewDecision(
+            gate=gate,
+            verdict=ReviewVerdict.REVISE,
+            reviewer="local-operator",
+            comment=args.lesson,
+            reusable_lesson=args.lesson,
+        ).model_dump(mode="json")
     return ReviewDecision(
         gate=gate,
         verdict=ReviewVerdict.APPROVE,
@@ -123,6 +133,28 @@ def main(argv: list[str] | None = None) -> int:
         help="where per-node output is written (default: data/runs/<run-id>)",
     )
     parser.add_argument(
+        "--feedback-file",
+        type=Path,
+        default=None,
+        help="JSON file holding the feedback quarantine across runs",
+    )
+    parser.add_argument(
+        "--revise-gate",
+        choices=("policy", "release"),
+        default=None,
+        help="send this gate back for revision instead of approving it, recording --lesson",
+    )
+    parser.add_argument(
+        "--lesson",
+        default="Revised by the local example runner.",
+        help="the reusable lesson attached to a --revise-gate decision",
+    )
+    parser.add_argument(
+        "--activate-feedback",
+        action="store_true",
+        help="approve every pending lesson before the run, as a curator would",
+    )
+    parser.add_argument(
         "--provider",
         choices=("local", "demo"),
         default="local",
@@ -184,9 +216,19 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
     )
 
+    feedback_store = (
+        JsonFeedbackStore(args.feedback_file)
+        if args.feedback_file is not None
+        else InMemoryFeedbackStore()
+    )
+    if args.activate_feedback and isinstance(feedback_store, JsonFeedbackStore):
+        for card in feedback_store.pending():
+            feedback_store.activate(card.feedback_id, approved_by="local-curator")
+            print(f"activated lesson {card.feedback_id} for {card.stage.value}", file=sys.stderr)
+
     graph = build_workflow(
         model_gateway=gateway,
-        feedback_store=InMemoryFeedbackStore(),
+        feedback_store=feedback_store,
         compilation_batch_size=args.batch_size,
         compilation_max_attempts=args.max_attempts,
         assessment_batch_size=args.assessment_batch_size,
@@ -213,8 +255,9 @@ def main(argv: list[str] | None = None) -> int:
         gate = _pending_gate(graph, config)
         if gate is None:
             break
-        print(f"gate reached: {gate.value} -> approving", file=sys.stderr)
-        state = recorder.run(graph, Command(resume=_approval(gate)), config)
+        decision = _decision(gate, args)
+        print(f"gate reached: {gate.value} -> {decision['verdict']}", file=sys.stderr)
+        state = recorder.run(graph, Command(resume=decision), config)
 
     print(json.dumps({key: state[key] for key in state if key != "document"}, indent=2))
     if state.get("validation_errors"):
