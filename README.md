@@ -112,6 +112,22 @@ The folder's contents are git-ignored on purpose — see
 [the folder README](data/sop_inputs/README.md) and
 [the clean-room boundary](docs/CLEAN_ROOM.md).
 
+### Exercising the feedback loop
+
+A reviewer who sends a gate back can attach a reusable lesson. It is quarantined as
+pending, and only a later run whose curator approved it will see it in a prompt.
+`--feedback-file` keeps that quarantine across runs:
+
+```powershell
+uv run python examples/run_local.py <sop> --feedback-file data/runs/feedback.json `
+  --revise-gate policy --lesson "A policy needs a checkable condition."
+uv run python examples/run_local.py <sop> --feedback-file data/runs/feedback.json `
+  --activate-feedback
+```
+
+The second command approves everything pending — standing in for a curator — and the
+lesson reaches the extraction prompt of that run.
+
 ### Replaying one step
 
 Every node's output is written to `data/runs/<run-id>/NN-<node>.json` as the run
